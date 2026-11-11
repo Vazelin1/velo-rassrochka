@@ -5,7 +5,7 @@ MSK=dt.timezone(dt.timedelta(hours=3));L=threading.Lock()
 os.makedirs('/data/backups',exist_ok=True)
 db=sqlite3.connect('/data/app.db',check_same_thread=False)
 db.executescript("create table if not exists docs(id text primary key,kind text,data text);create table if not exists log(ts text,act text,id text,old text,new text);create table if not exists inv(tok text primary key,client text,exp real);create table if not exists bind(tg integer primary key,client text)")
-FAIL={};TRY={};BOT=[None]
+FAIL={};TRY={};BOT=[os.environ.get('BOT_USERNAME','').lstrip('@') or None]
 HD={'X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Strict-Transport-Security':'max-age=31536000',
 'Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self' https://*.telegram.org"}
 def strip(x):
@@ -21,11 +21,14 @@ def who(init):
     except Exception:pass
 def tg(method,data):
     return json.load(urllib.request.urlopen(urllib.request.Request(f'https://api.telegram.org/bot{TOK}/{method}',json.dumps(data).encode(),{'Content-Type':'application/json'}),timeout=20))
-def say(t):
+def _say(t):
     try:tg('sendMessage',{'chat_id':OWNER,'text':t})
-    except Exception as e:print(e)
+    except Exception as e:print('say',e)
+def say(t):threading.Thread(target=_say,args=(t,),daemon=True).start()
 def botname():
-    if not BOT[0]:BOT[0]=tg('getMe',{})['result']['username']
+    if not BOT[0]:
+        try:BOT[0]=tg('getMe',{})['result']['username']
+        except Exception as e:print('getMe',e)
     return BOT[0]
 def doc(i):
     r=db.execute('select data from docs where id=?',(i,)).fetchone();return r and json.loads(r[0])
@@ -94,8 +97,8 @@ class H(BaseHTTPRequestHandler):
                     return s.send(200,b'{}')
                 if p=='/api/invite':
                     k=secrets.token_urlsafe(9);db.execute('insert into inv values(?,?,?)',(k,str(b.get('client')),t+7*86400));db.commit()
-                    try:return s.send(200,json.dumps({'tok':k,'bot':botname()}).encode())
-                    except Exception:return s.send(500,b'{}')
+                    if not BOT[0]:return s.send(500,b'{}')
+                    return s.send(200,json.dumps({'tok':k,'bot':BOT[0]}).encode())
                 if p=='/api/unbind':
                     db.execute('delete from bind where client=?',(str(b.get('client')),));db.commit();return s.send(200,b'{}')
                 return s.send(404,b'{}')
@@ -137,4 +140,5 @@ def job():
             except Exception as e:print(e)
         time.sleep(30)
 threading.Thread(target=job,daemon=True).start()
+threading.Thread(target=botname,daemon=True).start()
 ThreadingHTTPServer(('',8080),H).serve_forever()
