@@ -129,6 +129,13 @@ nav .bar{pointer-events:auto;display:flex;width:100%;max-width:520px;background:
 .center{padding:48px 24px 24px;text-align:center}.center h1{margin:18px 0 8px;font-size:28px;letter-spacing:-.02em}.center p{color:var(--mu);margin:0 0 20px;line-height:1.45}
 :focus-visible{outline:3px solid var(--pine);outline-offset:2px}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+.rpd{margin-top:6px}
+.rpl{max-height:min(56vh,430px);overflow-y:auto;overscroll-behavior:contain;border-top:1px solid var(--ln)}
+.rpl .row{min-height:56px;padding:8px 16px 8px 20px}.rpl .row.nl::before{left:20px}.rpl .row.mo{padding-left:38px}.rpl .row.mo::before{left:38px}
+.rpl .row.on{background:var(--tint)}.rpl .row.on .tx b{color:var(--pine)}
+.rpl .row .tx b{font-size:16px}.rpl .row.yr .tx b{font-size:17px;font-weight:750}
+.rpl .row .rt,.rpr .rt{flex-direction:row;align-items:center;gap:8px}.rpl .row .rt b,.rpr .rt b{font-size:16px;font-weight:700;white-space:nowrap}.rpl .row .rt .ic{color:var(--pine)}.rpr .rt .ic{color:var(--mu)}
+.rpr{min-height:62px}
 </style></head><body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
 <symbol id="i-home" viewBox="0 0 24 24"><path d="M3.5 11 12 3.5 20.5 11M5.5 9.5V20h4.5v-5.5h4V20h4.5V9.5"/></symbol>
@@ -310,13 +317,13 @@ return `${backBtn()}<div class=hd><h1>Новый выкуп</h1></div><div class
 <div class=f2>${fld('Номер договора','ct')}<label class=fld><span>Дата оформления</span><input id=s type=date value="${C.today()}"></label></div><label class=fld><span>Второй аккумулятор: закупка, ₽ (если берёт)</span><input id=ec type=number inputmode=numeric oninput=updD()></label>
 <label class=fld><span>Способ оплаты первого периода</span></label>${seg('m',['наличные','СБП','перевод'],null,'in')}<div id=pv class=pv></div><div class=acts><button class="btn blk lg" onclick=saveDeal()>Создать выкуп</button></div></div>`}
 function termOpts(){const mk=S.cfg.mk||C.MK;$('#n').innerHTML=Object.keys(mk.w).map(n=>`<option value=${n}>${n} нед., наценка ${mk.w[n]}%</option>`).join('')}
-function dealIn(){const b=S.bikes.find(x=>x.id==v('#b'));if(!b||!v('#c'))return;const ec=+v('#ec');return{cost:b.cost,type:'w',n:+v('#n'),down:+v('#dn')||0,disc:v('#ds'),mk:S.cfg.mk,tax:S.cfg.tax,ds:S.cfg.ds,extras:ec?[{name:'Второй аккумулятор',cost:ec,price:Math.round(ec*(1+(S.cfg.exm==null?24:S.cfg.exm)/100))}]:[]}}
-const res=r=>`<div class=mu>Платёж в неделю</div><div class=big>${m(r.pay)}</div>${kv('Цена для клиента',m(r.total))}${kv('Остаток после взноса',m(r.bal))}${kv('Последний платёж',m(r.last))}${kv(`Налог ${S.cfg.tax==null?7:S.cfg.tax}%`,m(r.tax))}${kv('Прибыль',`${m(r.profit)} (${r.pct.toFixed(0)}%)`)}${r.pct<25?`<div class="note t-er" style="margin:12px 0 0">${ic('alert')}<div><b>Прибыль ниже 25%</b></div></div>`:''}`;
+function dealIn(){const b=S.bikes.find(x=>x.id==v('#b'));if(!b||!v('#c'))return;const ec=+v('#ec');return{cost:b.cost,type:'w',n:+v('#n'),down:+v('#dn')||0,disc:v('#ds'),mk:S.cfg.mk,tax:S.cfg.tax,acq:S.cfg.acq,ds:S.cfg.ds,extras:ec?[{name:'Второй аккумулятор',cost:ec,price:Math.round(ec*(1+(S.cfg.exm==null?24:S.cfg.exm)/100))}]:[]}}
+const res=r=>`<div class=mu>Платёж в неделю</div><div class=big>${m(r.pay)}</div>${kv('Цена для клиента',m(r.total))}${kv('Остаток после взноса',m(r.bal))}${kv('Последний платёж',m(r.last))}${kv(`Налог ${S.cfg.tax==null?7:S.cfg.tax}%`,m(r.tax))}${r.acq?kv(`Эквайринг ${pc(AQ())}%`,m(r.acq)):''}${kv('Прибыль',`${m(r.profit)} (${r.pct.toFixed(0)}%)`)}${r.pct<25?`<div class="note t-er" style="margin:12px 0 0">${ic('alert')}<div><b>Прибыль ниже 25%</b></div></div>`:''}`;
 function updD(){const o=dealIn();$('#pv').innerHTML=o?res(C.calc(o)):'Нет свободных клиентов или велосипедов. Сначала добавьте их.'}
 async function saveDeal(){const o=dealIn();if(!o)return uiAlert('Нужны клиент и велосипед');const r=C.calc(o);
-await put('deal',{client:v('#c'),bike:v('#b'),type:'w',n:o.n,start:v('#s'),down:o.down,disc:r.d,mk:r.mk,cost:o.cost,pay:r.pay,last:r.last,total:r.total,tax:r.tax,extras:o.extras,contract:v('#ct'),pen:S.cfg.pen==null?0.9:S.cfg.pen,early:[],status:'active',paid:{1:{date:v('#s'),amt:o.n==1?r.last:r.pay,pen:0,method:segVal('#m')}}});hap('success');toast('Выкуп оформлен');nav('home')}
+await put('deal',{client:v('#c'),bike:v('#b'),type:'w',n:o.n,start:v('#s'),down:o.down,disc:r.d,mk:r.mk,cost:o.cost,pay:r.pay,last:r.last,total:r.total,tax:r.tax,acq:r.acq,extras:o.extras,contract:v('#ct'),pen:S.cfg.pen==null?0.9:S.cfg.pen,early:[],status:'active',paid:{1:{date:v('#s'),amt:o.n==1?r.last:r.pay,pen:0,method:segVal('#m')}}});hap('success');toast('Выкуп оформлен');nav('home')}
 /* ---------- deal screen */
-const EXP=b=>((b&&b.exp)||[]).reduce((a,e)=>a+e.amt,0),TX=()=>S.cfg.tax==null?7:S.cfg.tax,exc=d=>(d.extras||[]).reduce((a,e)=>a+e.cost,0),EA=()=>S.cfg.early||10000;
+const EXP=b=>((b&&b.exp)||[]).reduce((a,e)=>a+e.amt,0),TX=()=>S.cfg.tax==null?7:S.cfg.tax,AQ=()=>S.cfg.acq||0,pc=x=>(+x).toLocaleString('ru'),exc=d=>(d.extras||[]).reduce((a,e)=>a+e.cost,0),EA=()=>S.cfg.early||10000;
 function deal(id){const d=S.deals.find(x=>x.id==id),c=S.clients.find(x=>x.id==d.client)||{},b=S.bikes.find(x=>x.id==d.bike)||{},I=info(d),on=d.status=='active',k=I.sc.length-I.un.length,t=C.today();
 const stt=on?(I.od.length?['просрочка','er']:I.done?['выплачен','ok']:['в выкупе','bl']):({archived:['выкуплен','ok'],seized:['изъят','er'],lost:['списан','n']}[d.status]||['закрыт','n']);
 const r=x=>{const p=d.paid[x.k],o=!p&&x.due<t;return `<div class="per ${p?'ok':o?'er':''}"><span class=dot>${p?ic('check','s'):x.k}</span><span class=tx><b>${per(d,x)}</b><span>${p?`оплачен ${fmt(p.date)}, ${esc(p.method)}${p.pen?`, неустойка ${m(p.pen)}`:''}`:`до ${fmt(x.due)}`}</span>${p&&on&&can('pay')?`<span><button class=un onclick="unpay('${d.id}',${x.k})">Отменить оплату</button></span>`:''}</span><b>${m(p?p.amt:x.amt)}</b></div>`};
@@ -349,7 +356,7 @@ else{if(!await uiConfirm('Клиент и велосипед уйдут в ар�
 d.status=st;d.closed=C.today();await put('deal',d);nav('home')}
 /* ---------- calculator */
 const calcS=()=>`${backBtn()}<div class=hd><h1>Калькулятор</h1></div><div class=form><label class=fld><span>Закупка велосипеда, ₽</span><input id=k type=number inputmode=numeric oninput=updC()></label><label class=fld><span>Первоначальный взнос, ₽</span><input id=d2 type=number inputmode=numeric oninput=updC()></label></div><div id=tb></div>`;
-function updC(){const cost=+v('#k'),mk=S.cfg.mk||C.MK;$('#tb').innerHTML=!cost?'':Object.keys(mk.w).map(n=>{const r=C.calc({cost,type:'w',n:+n,down:+v('#d2')||0,mk:S.cfg.mk,tax:S.cfg.tax,ds:S.cfg.ds});return `<div class="card ${r.pct<25?'t-er':''}"><div style="display:flex;justify-content:space-between;align-items:baseline"><b>${n} недель</b><span class=mid>${m(r.pay)}</span></div>${kv('Последний платёж',m(r.last))}${kv('Цена',m(r.total))}${kv('Налог',m(r.tax))}${kv('Прибыль',`${m(r.profit)} (${r.pct.toFixed(0)}%)`)}</div>`}).join('')}
+function updC(){const cost=+v('#k'),mk=S.cfg.mk||C.MK;$('#tb').innerHTML=!cost?'':Object.keys(mk.w).map(n=>{const r=C.calc({cost,type:'w',n:+n,down:+v('#d2')||0,mk:S.cfg.mk,tax:S.cfg.tax,acq:S.cfg.acq,ds:S.cfg.ds});return `<div class="card ${r.pct<25?'t-er':''}"><div style="display:flex;justify-content:space-between;align-items:baseline"><b>${n} недель</b><span class=mid>${m(r.pay)}</span></div>${kv('Последний платёж',m(r.last))}${kv('Цена',m(r.total))}${kv('Налог',m(r.tax))}${r.acq?kv('Эквайринг',m(r.acq)):''}${kv('Прибыль',`${m(r.profit)} (${r.pct.toFixed(0)}%)`)}</div>`}).join('')}
 /* ---------- expenses */
 function expS(id){const b=S.bikes.find(x=>x.id==id)||{},l=(b.exp||[]).map((e,i)=>({e,i})).sort((x,y)=>x.e.date<y.e.date?1:-1),ro=!can('bikes');
 return `${backBtn()}<div class=hd><div><small>Расходы на обслуживание</small><h1>${esc(b.name)}</h1></div></div><div class=card><div class=mu>Всего потрачено</div><div class=big>${m(EXP(b))}</div></div>`+
@@ -378,13 +385,13 @@ if(!await uiConfirm(`Клиент ${nm(d.client)} получит «${bk(nb)}». 
 (d.swaps=d.swaps||[]).push({date,from:old,to:nb,reason:why});d.bike=nb;await put('deal',d);hap('success');toast('Велосипед заменён');if(fate=='Списать'){V.pop();go('woS',old)}else back()}
 
 /* ---------- reports */
-let repTab='rep',repP='m';
-const PN={m:'Месяц',pm:'Прошлый',q:'Квартал',all:'Всё время'},MN=['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'],z2=n=>String(n).padStart(2,'0'),ldm=(Y,M)=>new Date(Date.UTC(Y,M,0)).getUTCDate();
-function rng(p){const t=C.today(),y=+t.slice(0,4),mo=+t.slice(5,7);
-if(p=='all')return['0000-01-01','9999-12-31'];if(p=='y')return[`${y}-01-01`,`${y}-12-31`];
-if(p=='m')return[`${y}-${z2(mo)}-01`,`${y}-${z2(mo)}-${ldm(y,mo)}`];
-if(p=='pm'){const Y=mo==1?y-1:y,M=mo==1?12:mo-1;return[`${Y}-${z2(M)}-01`,`${Y}-${z2(M)}-${ldm(Y,M)}`]}
-const q=Math.floor((mo-1)/3)*3+1;return[`${y}-${z2(q)}-01`,`${y}-${z2(q+2)}-${ldm(y,q+2)}`]}
+let repTab='rep',repP=null,repOpen=false;
+const MN=['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'],MF=['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'],z2=n=>String(n).padStart(2,'0'),ldm=(Y,M)=>new Date(Date.UTC(Y,M,0)).getUTCDate();
+/* period: 'all' | 'Y2026' | 'M2026-11'; a month is always the 1st to the last day */
+const curP=()=>repP||'M'+C.today().slice(0,7);
+function rng(p){if(p=='all')return['0000-01-01','9999-12-31'];if(p[0]=='Y'){const y=p.slice(1);return[`${y}-01-01`,`${y}-12-31`]}
+const y=+p.slice(1,5),mo=+p.slice(6,8);return[`${y}-${z2(mo)}-01`,`${y}-${z2(mo)}-${ldm(y,mo)}`]}
+const pLab=p=>p=='all'?'Всё время':p[0]=='Y'?`${p.slice(1)} год`:`${MF[+p.slice(6,8)-1]} ${p.slice(1,5)}`;
 function events(){const r=[];S.deals.forEach(d=>{const p1=(d.paid||{})[1]||{};
 if(d.down)r.push({date:d.start,amt:d.down,pen:0,method:p1.method||'наличные',t:'down',d});
 Object.values(d.paid||{}).forEach(p=>r.push({date:p.date,amt:p.amt,pen:p.pen||0,method:p.method||'наличные',t:'pay',d}));
@@ -393,24 +400,51 @@ if(d.refund)r.push({date:d.closed||d.start,amt:-d.refund,pen:0,method:'',t:'ref'
 function sumR(a,b){const R={pay:0,early:0,down:0,pen:0,ref:0,by:{},exp:0,lost:0,lostN:0};
 events().forEach(e=>{if(e.date<a||e.date>b)return;if(e.t=='ref'){R.ref-=e.amt;return}R[e.t]+=e.amt;R.pen+=e.pen;R.by[e.method]=(R.by[e.method]||0)+e.amt+e.pen});
 S.bikes.forEach(k=>{(k.exp||[]).forEach(x=>{if(x.date>=a&&x.date<=b)R.exp+=x.amt});if(k.wo&&k.wo.date>=a&&k.wo.date<=b){R.lost+=k.wo.loss||0;R.lostN++}});
-R.gross=R.pay+R.early+R.down+R.pen;R.net=R.gross-R.ref;R.tax=Math.round(R.net*TX()/100);return R}
+R.gross=R.pay+R.early+R.down+R.pen;R.net=R.gross-R.ref;R.tax=Math.round(R.net*TX()/100);R.acq=Math.round((R.by['СБП']||0)*AQ()/100);return R}
 const bars=L=>{const mx=Math.max(1,...L.map(i=>i[1]));return `<div class=bars>${L.map(([a,b])=>`<div class=br><span>${a}</span><i><u style="width:${b>0?Math.max(3,b/mx*100):0}%"></u></i><b>${m(b)}</b></div>`).join('')}</div>`};
 function rep(){return `<div class=hd><h1>Отчёты</h1></div>${seg('rt',['Отчёты','Аналитика'],repTab=='rep'?'Отчёты':'Аналитика')}`+(repTab=='rep'?repR():repA())}
-document.addEventListener('click',e=>{const b=e.target.closest('#rt button');if(b){repTab=b.textContent=='Отчёты'?'rep':'an';render()}const p=e.target.closest('#rp button');if(p){repP=Object.keys(PN).find(k=>PN[k]==p.textContent);render()}});
-function repR(){const[a,b]=rng(repP),R=sumR(a,b),all=sumR(...rng('all')),A=act().map(d=>({d,I:info(d)})).filter(x=>x.I.od.length);
+document.addEventListener('click',e=>{const b=e.target.closest('#rt button');if(b){repTab=b.textContent=='Отчёты'?'rep':'an';repOpen=false;render()}});
+function togPer(){repOpen=!repOpen;const h=$('.rpd');if(!h)return;h.classList.toggle('open',repOpen);h.querySelector('.hh').setAttribute('aria-expanded',repOpen);hap()}
+function setPer(p){repP=p;repOpen=false;hap();render()}
+function firstDate(){let f=C.today();S.deals.forEach(d=>{if(d.start&&d.start<f)f=d.start;Object.values(d.paid||{}).forEach(p=>{if(p.date&&p.date<f)f=p.date})});S.bikes.forEach(k=>{const c=k.created&&k.created.slice(0,10);if(c&&c<f)f=c;(k.exp||[]).forEach(x=>{if(x.date<f)f=x.date})});return f}
+/* net profit: per bike, money received (minus tax and acquiring) first pays back what was put into the bike; only what is above that is profit */
+function ledger(){const r=TX()/100,q=AQ()/100,t=C.today(),L={},ad=(b,d,v)=>{(L[b]=L[b]||[]).push([d,v])},fst={};
+S.deals.forEach(d=>useSegs(d).forEach(s=>{if(!fst[s.bike]||s.from<fst[s.bike])fst[s.bike]=s.from}));
+events().forEach(e=>{const b=bikeAt(e.d,e.date),g=e.amt+e.pen;ad(b,e.date,g*(1-r)-(e.method=='СБП'?g*q:0));if(!fst[b]||e.date<fst[b])fst[b]=e.date});
+S.bikes.forEach(k=>{const bd=[k.created&&k.created.slice(0,10),fst[k.id]].filter(Boolean).sort()[0]||t;ad(k.id,bd,-k.cost);(k.exp||[]).forEach(x=>ad(k.id,x.date,-x.amt))});
+S.deals.forEach(d=>{const c=exc(d);if(c)ad(d.bike,d.start,-c)});return L}
+const profFn=L=>{const Pr=D=>Math.round(Object.values(L).reduce((s,a)=>s+Math.max(0,a.reduce((q,x)=>x[0]<=D?q+x[1]:q,0)),0));return(a,b)=>Pr(b)-(a<='0000-01-01'?0:Pr(C.add(a,-1)))};
+function weeksOf(y,mo){const n=ldm(y,mo),W=[];let a=1;while(a<=n){const wd=(new Date(Date.UTC(y,mo-1,a)).getUTCDay()+6)%7,b=Math.min(n,a+6-wd);W.push([`${y}-${z2(mo)}-${z2(a)}`,`${y}-${z2(mo)}-${z2(b)}`]);a=b+1}return W}
+const wLab=(a,b)=>{const x=+a.slice(8),y=+b.slice(8),mo=MN[+a.slice(5,7)-1];return x==y?`${x} ${mo}`:`${x}–${y} ${mo}`};
+const pmon=x=>x<0?`<b style="color:var(--ert)">${m(x)}</b>`:`<b>${m(x)}</b>`;
+function perBox(sel,pf,first){const t=C.today(),y1=+t.slice(0,4),m1=+t.slice(5,7),y0=+first.slice(0,4),m0=+first.slice(5,7),[a,b]=rng(sel);
+const row=(p,l,s,x,cl)=>`<button class="row nl ${cl} ${p==sel?'on':''}" onclick="setPer('${p}')"${p==sel?' aria-current=true':''}><span class=tx><b>${l}</b>${s?`<span>${s}</span>`:''}</span><span class=rt>${pmon(x)}${p==sel?ic('check','s'):''}</span></button>`;
+let h=row('all','Всё время','с '+fmt(first),pf(...rng('all')),'');
+for(let y=y1;y>=y0;y--){h+=row('Y'+y,`${y} год`,'',pf(...rng('Y'+y)),'yr');for(let mo=(y==y1?m1:12);mo>=(y==y0?m0:1);mo--){const p=`M${y}-${z2(mo)}`;h+=row(p,MF[mo-1],'',pf(...rng(p)),'mo')}}
+const sub=sel=='all'?`с ${fmt(first)} по сегодня`:`${fmt(a)} – ${fmt(b)}`;
+return `<section class="hero rpd ${repOpen?'open':''}"><button class=hh onclick=togPer() aria-expanded="${repOpen}" aria-controls=rpl><span class=tx><span class=ht>${pLab(sel)}</span><span class=hs>${sub}</span></span><span class=chev>${ic('chev')}</span></button><div class=cal id=rpl><div><div class=rpl>${h}</div></div></div></section>`}
+function profList(p,pf,first){const t=C.today();let h='';
+if(p[0]=='M'){const y=+p.slice(1,5),mo=+p.slice(6,8);h+=`<h2 class=sec>Чистая прибыль по неделям</h2><div class=grp>`+weeksOf(y,mo).filter(w=>w[0]<=t).map(([a,b])=>`<div class="row nl rpr" style="cursor:default"><span class=tx><b>${wLab(a,b)}</b><span>получено ${m(sumR(a,b).net)}</span></span><span class=rt>${pmon(pf(a,b))}</span></div>`).join('')+`</div><p class=sub>Недели идут с понедельника по воскресенье. Первая и последняя неделя обрезаны по границам месяца, поэтому сумма недель равна итогу за месяц.</p>`}
+else{const fm=first.slice(0,7),tm=t.slice(0,7),y=p.slice(1),lo=p=='all'||fm>y+'-01'?fm:y+'-01',hi=p=='all'||tm<y+'-12'?tm:y+'-12',L=[];let yy=+lo.slice(0,4),mo=+lo.slice(5,7);while(`${yy}-${z2(mo)}`<=hi){L.push(`${yy}-${z2(mo)}`);if(++mo>12){mo=1;yy++}}
+h+=`<h2 class=sec>Чистая прибыль по месяцам</h2><div class=grp>`+L.slice().reverse().map(k=>{const[a,b]=rng('M'+k);return `<button class="row nl rpr" onclick="setPer('M${k}')"><span class=tx><b>${MF[+k.slice(5)-1]} ${k.slice(0,4)}</b><span>получено ${m(sumR(a,b).net)}</span></span><span class=rt>${pmon(pf(a,b))}${ic('right','s')}</span></button>`}).join('')+`</div><p class=sub>Нажмите на месяц, чтобы увидеть его по неделям.</p>`}
+return h}
+function repR(){const p=curP(),[a,b]=rng(p),R=sumR(a,b),all=sumR(...rng('all')),A=act().map(d=>({d,I:info(d)})).filter(x=>x.I.od.length),pf=profFn(ledger()),first=firstDate(),PR=pf(a,b),back=R.net-R.tax-R.acq-PR;
 const inv=S.bikes.reduce((s,k)=>s+k.cost,0)+S.deals.reduce((s,d)=>s+exc(d),0)+S.bikes.reduce((s,k)=>s+EXP(k),0);
 const debt=A.reduce((s,x)=>s+x.I.od.reduce((q,y)=>q+y.amt,0),0),pen=A.reduce((s,x)=>s+x.I.pen,0),lostAll=S.bikes.reduce((s,k)=>s+((k.wo&&k.wo.loss)||0),0),wl=S.bikes.filter(k=>k.wo&&k.wo.date>=a&&k.wo.date<=b);
-return seg('rp',Object.values(PN),PN[repP])+
-`<div class="card tint"><div class=mu>Получено за период</div><div class=big>${m(R.net)}</div>${kv('Платежи по графику',m(R.pay))}${kv('Первоначальные взносы',m(R.down))}${kv('Досрочные платежи',m(R.early))}${kv('Неустойки',m(R.pen))}${R.ref?kv('Возвраты клиентам','−'+m(R.ref)):''}</div>
+return perBox(p,pf,first)+
+`<div class="card tint"><div class=mu>Чистая прибыль, ${p=='all'?'всё время':pLab(p).toLowerCase()}</div><div class=big${PR<0?' style="color:var(--ert)"':''}>${m(PR)}</div>${kv('Получено',m(R.net))}${kv(`Налог ${pc(TX())}%`,'−'+m(R.tax))}${kv(`Эквайринг ${pc(AQ())}%`,'−'+m(R.acq))}${kv('Ушло на возврат вложений в велосипеды',(back>0?'−':'')+m(Math.abs(back)))}</div>
+<p class=sub>Сначала деньги возвращают вложения в велосипед: закупку, допы и обслуживание. Всё, что получено сверх этого, и есть чистая прибыль.${lostAll?' Убытки от списанных велосипедов в неё не входят, они показаны ниже.':''}</p>
+${profList(p,pf,first)}
+<div class=card><div class=mu>Получено за период</div><div class=mid>${m(R.net)}</div>${kv('Платежи по графику',m(R.pay))}${kv('Первоначальные взносы',m(R.down))}${kv('Досрочные платежи',m(R.early))}${kv('Неустойки',m(R.pen))}${R.ref?kv('Возвраты клиентам','−'+m(R.ref)):''}</div>
 <div class=card><b>По способам оплаты</b>${Object.keys(R.by).length?bars(Object.keys(R.by).map(k=>[esc(k),R.by[k]])):'<p class=mu style="margin:8px 0 0">Платежей нет</p>'}</div>
-<div class=card><b>Налог и расходы</b>${kv(`Налог ${TX()}% (отложить)`,m(R.tax))}${kv('Расходы на обслуживание',m(R.exp))}${R.lostN?kv(`Убыток от списаний (${R.lostN})`,m(R.lost)):''}${kv('Остаётся без учёта закупки',m(R.net-R.tax-R.exp))}</div>
+<div class=card><b>Налог, эквайринг и расходы</b>${kv(`Налог ${pc(TX())}% (отложить)`,m(R.tax))}${kv(`Эквайринг ${pc(AQ())}% с платежей по СБП`,m(R.acq))}${kv('Расходы на обслуживание',m(R.exp))}${R.lostN?kv(`Убыток от списаний (${R.lostN})`,m(R.lost)):''}${kv('Остаётся без учёта закупки',m(R.net-R.tax-R.acq-R.exp))}</div>
 ${wl.length?`<div class=card><b>Списано за период</b>${wl.map(k=>kv(`${esc(k.name)}, ${esc(k.wo.reason)}`,m(k.wo.loss))).join('')}</div>`:''}
 <div class=card><b>Весь парк за всё время</b>${kv('Вложено (закупка, акк., обслуживание)',m(inv))}${kv('Получено от клиентов',m(all.net))}${kv('Разница',m(all.net-inv))}${lostAll?kv('В том числе убытки по списанным',m(lostAll)):''}</div>
 <div class="card ${A.length?'t-er':''}"><b>Просрочка сейчас</b>${A.length?kv('Клиентов',A.length)+kv('Долг по платежам',m(debt))+kv('Неустойка набежала',m(pen))+A.map(x=>`<button class="kv" style="width:100%;background:none;border:0;border-top:1px solid var(--ln);color:inherit;text-align:left;cursor:pointer" onclick="go('deal','${x.d.id}')"><span style="color:inherit">${esc(nm(x.d.client))}</span><b>${C.diff(C.today(),x.I.od[0].due)} ${dayWord(C.diff(C.today(),x.I.od[0].due))}</b></button>`).join(''):'<p class=mu style="margin:8px 0 0">Просрочек нет</p>'}</div>
-<p class=sub>Налог — ориентир: ставка из настроек × полученные деньги вместе с неустойками. Порядок уплаты уточните у бухгалтера.</p>`}
-function terms(){const ds=S.deals.filter(d=>d.status!='seized'&&d.status!='lost'&&d.total),g={};ds.forEach(d=>{const p=d.total-d.cost-exc(d)-(d.tax||0),o=g[d.n]=g[d.n]||{n:d.n,c:0,p:0,k:0};o.c++;o.p+=p;o.k+=d.cost});
+<p class=sub>Налог и эквайринг — ориентир: ставки из настроек × полученные деньги (налог со всех платежей вместе с неустойками, эквайринг только с платежей по СБП). Порядок уплаты уточните у бухгалтера.</p>`}
+function terms(){const ds=S.deals.filter(d=>d.status!='seized'&&d.status!='lost'&&d.total),g={};ds.forEach(d=>{const p=d.total-d.cost-exc(d)-(d.tax||0)-(d.acq||0),o=g[d.n]=g[d.n]||{n:d.n,c:0,p:0,k:0};o.c++;o.p+=p;o.k+=d.cost});
 const L=Object.values(g).map(o=>({...o,ap:o.p/o.c,pc:o.k?o.p/o.k*100:0})).sort((a,b)=>a.n-b.n),best=L.reduce((x,y)=>!x||y.pc>x.pc?y:x,null);
-return `<h2 class=sec>Выгодные сроки</h2>`+(L.length?`<div class=grp>${L.map(o=>`<div class="row nl wr" style="cursor:default"><span class="gl ${o===best?'t-ok':''}">${o===best&&L.length>1?ic('check'):o.n}</span><span class=tx><b>${o.n} недель</b><span>средняя прибыль ${m(o.ap)}, ${o.pc.toFixed(0)}% от закупки</span></span><span class=rt>${chip(`${o.c} из ${ds.length}`)}</span></div>`).join('')}</div>`:empty('chart','Пока нет выкупов'))+`<p class=sub>Плановая прибыль при полной выплате: цена − закупка − допы − налог. Изъятые и списанные не учитываются.</p>`}
+return `<h2 class=sec>Выгодные сроки</h2>`+(L.length?`<div class=grp>${L.map(o=>`<div class="row nl wr" style="cursor:default"><span class="gl ${o===best?'t-ok':''}">${o===best&&L.length>1?ic('check'):o.n}</span><span class=tx><b>${o.n} недель</b><span>средняя прибыль ${m(o.ap)}, ${o.pc.toFixed(0)}% от закупки</span></span><span class=rt>${chip(`${o.c} из ${ds.length}`)}</span></div>`).join('')}</div>`:empty('chart','Пока нет выкупов'))+`<p class=sub>Плановая прибыль при полной выплате: цена − закупка − допы − налог − эквайринг. Изъятые и списанные не учитываются.</p>`}
 function disc(){const by={};S.deals.forEach(d=>{const o=by[d.client]=by[d.client]||{c:d.client,ok:0,late:0,dl:0,pen:0,pend:0,df:0},r=d.pen==null?0.9:d.pen;
 Object.entries(d.paid||{}).forEach(([k,p])=>{if(k==1)return;if(p.pen>0){o.late++;o.dl+=r>0&&p.amt?Math.max(1,Math.round(p.pen/(p.amt*r/100))):1;o.pen+=p.pen}else o.ok++});
 if(d.status=='active'){const I=info(d);o.late+=I.od.length;o.pend+=I.pen;I.od.forEach(y=>o.dl+=C.diff(C.today(),y.due))}o.df+=(d.defer||[]).length});
@@ -430,23 +464,22 @@ function forecast(){const t=C.today(),y=+t.slice(0,4),mo=+t.slice(5,7),A=act().m
 A.forEach(({I})=>{pen+=I.pen;I.un.forEach(x=>{all+=x.amt;if(x.due<t){od+=x.amt;return}const w=Math.floor(C.diff(x.due,t)/7);if(w<4)wk[w]+=x.amt;const i=keys.indexOf(x.due.slice(0,7));if(i>=0)mm[i]+=x.amt})});
 const six=mm.reduce((a,b)=>a+b,0);
 return `<h2 class=sec>Прогноз поступлений</h2><div class=card><b>Ближайшие 4 недели</b>${bars(wk.map((s,i)=>[`${fs(C.add(t,7*i))} – ${fs(C.add(t,7*i+6))}`,s]))}</div><div class=card><b>По месяцам</b>${bars(keys.map((k,i)=>[`${MN[+k.slice(5)-1]} ${k.slice(0,4)}`,mm[i]]).concat([['Позже',all-od-six]]))}</div><div class="card ${od?'t-er':''}">${kv('Просрочено сейчас',m(od))}${kv('Неустойка набежала',m(pen))}${kv('Осталось получить всего',m(all))}</div><p class=sub>Прогноз — по графикам активных выкупов, без неустоек и без будущих досрочных платежей.</p>`}
-function taxH(){return `<h2 class=sec>Налог по периодам</h2>`+[['Этот месяц','m'],['Квартал','q'],['Год','y']].map(([n,p])=>{const R=sumR(...rng(p)),pay=R.pay+R.early+R.down-R.ref,r=TX()/100;return `<div class=card><b>${n}</b>${kv('Платежи',m(pay))}${kv('Налог с платежей',m(pay*r))}${kv('Неустойки',m(R.pen))}${kv('Налог с неустоек',m(R.pen*r))}${kv('Всего налог',m(R.tax))}</div>`}).join('')+`<p class=sub>Расчёт по дате получения денег, ставка ${TX()}% из настроек. Прибыль в карточке выкупа считается по налогу на день оформления.</p>`}
-const repA=()=>terms()+discH()+bikesH()+forecast()+taxH();
+const repA=()=>terms()+discH()+bikesH()+forecast();
 /* ---------- settings */
 const admTone=a=>a.disabled?['отключён','n']:a.tg?['вошёл','ok']:['ждёт входа','wa'];
 function set(){const mk=S.cfg.mk||C.MK,ds=S.cfg.ds||[[30000,2],[50000,4]],tx=S.cfg.tax==null?7:S.cfg.tax,pn=S.cfg.pen==null?0.9:S.cfg.pen;
 return `<div class=hd><h1>Настройки</h1></div>
 <h2 class=sec>Администраторы</h2><div class=grp>${S.admins.map(a=>{const s=admTone(a);return `<button class=row onclick="go('fAdmin','${a.id}')"><span class="av t-${s[1]}">${esc(ini(a.name))}</span><span class=tx><b>${esc(a.name)}</b><span>${esc(a.phone)}</span></span><span class=rt>${chip(s[0],s[1])}</span></button>`}).join('')}<button class="row nl" onclick="go('fAdmin')"><span class=gl>${ic('plus')}</span><span class=tx><b>Добавить администратора</b><span>Телефон, права, ссылка для входа</span></span></button></div>
 <h2 class=sec>Цены и расчёты</h2><div class=form style="padding-top:0"><h3>Наценка по срокам, %</h3><div class=f2>${Object.keys(mk.w).map(n=>`<label class=fld><span>${n} недель</span><input type=number inputmode=decimal data-n=${n} value=${mk.w[n]}></label>`).join('')}<label class=fld><span>Допы (второй аккумулятор)</span><input id=exm type=number inputmode=decimal value=${S.cfg.exm==null?24:S.cfg.exm}></label></div>
-<h3>Налог и неустойка</h3><div class=f2><label class=fld><span>Налог с выручки, %</span><input id=tax type=number step=any inputmode=decimal value=${tx}></label><label class=fld><span>Неустойка, % за день</span><input id=pen type=number step=any inputmode=decimal value=${pn}></label></div>
+<h3>Налог, эквайринг и неустойка</h3><div class=f2><label class=fld><span>Налог с выручки, %</span><input id=tax type=number step=any inputmode=decimal value=${tx}></label><label class=fld><span>Эквайринг по СБП, %</span><input id=acq type=number step=any inputmode=decimal value=${AQ()}></label><label class=fld><span>Неустойка, % за день</span><input id=pen type=number step=any inputmode=decimal value=${pn}></label></div>
 <h3>Скидка за первоначальный взнос</h3><div class=f2><label class=fld><span>Взнос 1, ₽</span><input id=da0 type=number inputmode=numeric value=${ds[0][0]}></label><label class=fld><span>Скидка 1, п.п.</span><input id=db0 type=number step=any inputmode=decimal value=${ds[0][1]}></label><label class=fld><span>Взнос 2, ₽</span><input id=da1 type=number inputmode=numeric value=${ds[1][0]}></label><label class=fld><span>Скидка 2, п.п.</span><input id=db1 type=number step=any inputmode=decimal value=${ds[1][1]}></label></div>
 <h3>Досрочный платёж и отсрочка</h3><div class=f2><label class=fld><span>Сумма, ₽</span><input id=ea type=number inputmode=numeric value=${EA()}></label><label class=fld><span>Бонус, %</span><input id=ed type=number step=any inputmode=decimal value=${S.cfg.ed==null?1:S.cfg.ed}></label><label class=fld><span>Отсрочка, дней</span><input id=dd type=number inputmode=numeric value=${S.cfg.dd||2}></label></div>
-<p class=sub style="margin:10px 4px">Новые значения действуют для новых выкупов.</p><div class=acts style="margin:12px 0 0"><button class="btn blk" onclick=saveSet()>Сохранить</button></div></div>
+<p class=sub style="margin:10px 4px">Эквайринг — комиссия банка с платежей по СБП. В отчётах он считается с денег, фактически полученных по СБП, а в калькуляторе и плане выкупа — от всей цены, с запасом. Новые значения действуют для новых выкупов; отчёты пересчитываются сразу.</p><div class=acts style="margin:12px 0 0"><button class="btn blk" onclick=saveSet()>Сохранить</button></div></div>
 <h2 class=sec>Уведомления в Telegram</h2><div class=grp><label class=sw><span class=tx><b>Сообщения вам</b><span>Сводка в 10:00, оплаты от администраторов, входы, отсрочки клиентов</span></span><input type=checkbox ${S.cfg.nown?'checked':''} onchange="setNtf('nown',this)"></label><label class=sw><span class=tx><b>Напоминания клиентам</b><span>За день до платежа и в день платежа, подтверждение отсрочки</span></span><input type=checkbox ${S.cfg.ncli?'checked':''} onchange="setNtf('ncli',this)"></label></div><p class=sub style="margin:8px 20px 0">${S.cfg.nown||S.cfg.ncli?'':'Сейчас всё выключено. '}Сообщения отправляет бот с сервера. Если с сервера недоступен Telegram, они не доходят, а приложение работает как обычно.</p>
 <h2 class=sec>Резервная копия</h2><div class=card><p class=mu style="margin:0 0 12px">Скачивайте копию раз в 3 дня: приложение напомнит на главном экране. Файл сохранится на телефон, храните его в надёжном месте. Сервер сам делает копию каждую ночь и хранит 30 штук. В файле есть имена и телефоны клиентов и фото велосипедов: не пересылайте его посторонним.</p><p style="margin:0 0 12px;font-weight:650">${bkLast()}</p><div class=acts style="margin:0"><button class=btn onclick=downloadBackup(this)>${ic('down','s')}Скачать копию</button><button class="btn sec" onclick="$('#rf').click()">${ic('up','s')}Восстановить</button></div><input id=rf type=file accept=".json,application/json" hidden onchange="restoreFile(this)"></div>
 <h2 class=sec>Журнал</h2><div class=grp><button class="row nl" onclick="go('logS')"><span class=gl>${ic('list')}</span><span class=tx><b>Журнал действий</b><span>Кто и что менял: вы, администраторы, клиенты</span></span>${ic('right')}</button></div>`}
 async function setNtf(k,el){const on=el.checked;await put('cfg',{...S.cfg,id:'cfg',[k]:on});toast(on?'Включено':'Выключено')}
-async function saveSet(){const mk={w:{},m:(S.cfg.mk||C.MK).m};document.querySelectorAll('[data-n]').forEach(i=>mk.w[i.dataset.n]=+i.value);await put('cfg',{...S.cfg,id:'cfg',mk,exm:+v('#exm'),tax:+v('#tax'),pen:+v('#pen'),early:+v('#ea'),ed:+v('#ed'),dd:+v('#dd'),ds:[[+v('#da0'),+v('#db0')],[+v('#da1'),+v('#db1')]]});hap('success');toast('Настройки сохранены')}
+async function saveSet(){const mk={w:{},m:(S.cfg.mk||C.MK).m};document.querySelectorAll('[data-n]').forEach(i=>mk.w[i.dataset.n]=+i.value);await put('cfg',{...S.cfg,id:'cfg',mk,exm:+v('#exm'),tax:+v('#tax'),acq:Math.max(0,+v('#acq')||0),pen:+v('#pen'),early:+v('#ea'),ed:+v('#ed'),dd:+v('#dd'),ds:[[+v('#da0'),+v('#db0')],[+v('#da1'),+v('#db1')]]});hap('success');toast('Настройки сохранены')}
 /* ---------- backup */
 const hm=t=>t?`${t.slice(8,10)}.${t.slice(5,7)} ${t.slice(11,16)}`:'';
 const bkLast=()=>{const b=ME&&ME.backup;return b&&b.ts?`Последняя копия: ${hm(b.ts)}.`:'Копию ещё ни разу не скачивали.'};

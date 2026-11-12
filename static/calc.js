@@ -7,8 +7,8 @@ const today=()=>new Date(Date.now()+108e5).toISOString().slice(0,10);
 function calc(o){const mk=((o.mk||MK)[o.type]||{})[o.n]||0,d=o.disc!=null&&o.disc!==''?+o.disc:((o.ds||[[30000,2],[50000,4]]).find(x=>x[0]==o.down)||[0,0])[1],
 bike=Math.round(o.cost*(1+(mk-d)/100)),ex=(o.extras||[]).reduce((a,e)=>a+e.price,0),exc=(o.extras||[]).reduce((a,e)=>a+e.cost,0),
 total=bike+ex,bal=total-(o.down||0),pay=up(bal/o.n,o.type=='w'?100:1000),last=bal-pay*(o.n-1),
-tax=Math.round(total*(o.tax==null?7:o.tax)/100),profit=total-o.cost-exc-tax;
-return{mk,d,bike,total,bal,pay,last,tax,profit,pct:o.cost?profit/o.cost*100:0}}
+tax=Math.round(total*(o.tax==null?7:o.tax)/100),acq=Math.round(total*(o.acq==null?0:o.acq)/100),profit=total-o.cost-exc-tax-acq;
+return{mk,d,bike,total,bal,pay,last,tax,acq,profit,pct:o.cost?profit/o.cost*100:0}}
 function sched(d){d.paid=d.paid||{};const P=d.type=='m'?30:7,r=[];for(let k=1;k<=d.n;k++)r.push({k,due:k==1?d.start:add(d.start,P*(k-1)-1+(d.paid[k]?0:(d.shift||0))),amt:k==d.n?d.last:d.pay});
 let e=(d.early||[]).reduce((a,x)=>a+x.amt,0);for(let i=r.length-1;i>=0&&e>0;i--){if(d.paid[r[i].k])break;const c=Math.min(e,r[i].amt);r[i].amt-=c;e-=c}
 return r.filter(x=>x.amt>0||d.paid[x.k])}
