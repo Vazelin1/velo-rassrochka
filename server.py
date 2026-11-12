@@ -1,4 +1,4 @@
-import os,re,json,hmac,hashlib,sqlite3,threading,time,secrets,urllib.request,urllib.parse,datetime as dt
+import os,re,json,hmac,hashlib,sqlite3,threading,time,secrets,urllib.request,urllib.error,urllib.parse,datetime as dt
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 TOK=os.environ['BOT_TOKEN'];OWNER=int(os.environ['OWNER_ID'])
 MSK=dt.timezone(dt.timedelta(hours=3));L=threading.Lock()
@@ -59,11 +59,30 @@ def send_doc(name,data,cap):
     bd='b'+secrets.token_hex(12)
     fld=lambda k,v:f'--{bd}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
     body=fld('chat_id',OWNER)+fld('caption',cap)+f'--{bd}\r\nContent-Disposition: form-data; name="document"; filename="{name}"\r\nContent-Type: application/json\r\n\r\n'.encode()+data+f'\r\n--{bd}--\r\n'.encode()
-    r=json.load(urllib.request.urlopen(urllib.request.Request(f'{TGB}/bot{TOK}/sendDocument',body,{'Content-Type':'multipart/form-data; boundary='+bd}),timeout=90))
+    r=json.load(urllib.request.urlopen(urllib.request.Request(f'{TGB}/bot{TOK}/sendDocument',body,{'Content-Type':'multipart/form-data; boundary='+bd}),timeout=40))
     if not r.get('ok'):raise RuntimeError('Telegram отказал')
+BS='/data/last_backup.json'
+def bget():
+    try:return json.load(open(BS))
+    except Exception:return None
+def bset(ok,err=''):
+    o=bget() or {};t=dt.datetime.now(MSK).isoformat()
+    try:open(BS,'w').write(json.dumps({'ts':t,'ok':ok,'err':err,'ok_ts':t if ok else o.get('ok_ts')}))
+    except Exception as e:print('bset',e)
+def terr(e):
+    if isinstance(e,urllib.error.HTTPError):
+        if e.code in(400,403):return 'Бот не может написать вам. Откройте чат с ботом, нажмите «Запустить» (или отправьте /start) и повторите.'
+        if e.code==401:return 'Telegram не принял токен бота. Проверьте BOT_TOKEN на сервере.'
+        if e.code==413:return 'Файл копии больше 50 МБ, Telegram его не принимает.'
+        return f'Telegram вернул ошибку {e.code}.'
+    if isinstance(e,OSError):return 'Сервер не может связаться с Telegram (нет связи или адрес недоступен).'
+    return 'Не удалось отправить файл.'
 def backup_tg(why):
-    n=dt.datetime.now(MSK);d=dump()
-    send_doc(f'velo-{n:%Y-%m-%d-%H%M}.json',d,f'{why}, {n:%d.%m.%Y %H:%M}. Храните файл в тайне: в нём данные клиентов.')
+    n=dt.datetime.now(MSK)
+    try:send_doc(f'velo-{n:%Y-%m-%d-%H%M}.json',dump(),f'{why}, {n:%d.%m.%Y %H:%M}. Храните файл в тайне: в нём данные клиентов.')
+    except Exception as e:
+        m=terr(e);bset(False,m);print('backup',type(e).__name__,e);raise RuntimeError(m)
+    bset(True)
 def snap(pre):
     b=sqlite3.connect(f'{BK}/{pre}-{dt.datetime.now(MSK):%Y-%m-%d-%H%M%S}.db');db.backup(b);b.close()
     for f in sorted(x for x in os.listdir(BK) if x.startswith(pre+'-'))[:-(30 if pre=='app' else 5)]:os.remove(f'{BK}/{f}')
@@ -116,7 +135,7 @@ class H(BaseHTTPRequestHandler):
                     r=[{'kind':k,'id':i,'data':json.loads(d)} for i,k,d in db.execute('select id,kind,data from docs')]
                 else:
                     b=db.execute('select client from bind where tg=?',(u,)).fetchone()
-                    r={'role':'owner'} if u==OWNER else mine(b[0]) if b else {'role':'new'}
+                    r={'role':'owner','backup':bget()} if u==OWNER else mine(b[0]) if b else {'role':'new'}
             return s.send(200,json.dumps(r).encode())
         f={'/':'index.html','/calc.js':'calc.js'}.get(s.path)
         if not f:return s.send(404,b'')
@@ -132,7 +151,7 @@ class H(BaseHTTPRequestHandler):
         p=s.path;ts=dt.datetime.now(MSK).isoformat();t=time.time()
         if u==OWNER and p=='/api/backup':
             try:backup_tg('Копия по запросу')
-            except Exception as e:print('backup',e);return s.send(502,json.dumps({'err':'Telegram не принял файл. Проверьте, что вы нажимали Start в чате с ботом.'}).encode())
+            except Exception as e:return s.send(502,json.dumps({'err':str(e)},ensure_ascii=False).encode())
             return s.send(200,b'{}')
         if u==OWNER and p=='/api/restore':
             c,r=restore(b);return s.send(c,json.dumps({'docs':r} if c==200 else {'err':r}).encode())
@@ -183,7 +202,7 @@ def job():
                 if n.hour==3:
                     with L:snap('app')
                     try:backup_tg('Ночная копия')
-                    except Exception as e:print('backup',e);say('Не удалось отправить ночную копию в Telegram. Откройте Настройки → Резервная копия и отправьте вручную.')
+                    except Exception as e:say(f'Не удалось отправить ночную копию в Telegram. {e} Откройте Настройки → Резервная копия и отправьте вручную.')
                 else:
                     with L:ds=[json.loads(d) for (d,) in db.execute("select data from docs where kind='deal'")]
                     c=due_today(ds,n.date());say(f'Сегодня платят клиентов: {c}' if c else 'Сегодня платежей нет')
