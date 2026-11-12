@@ -2,7 +2,7 @@ import os,re,json,hmac,hashlib,sqlite3,threading,time,secrets,urllib.request,url
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 TOK=os.environ['BOT_TOKEN'];OWNER=int(os.environ['OWNER_ID'])
 MSK=dt.timezone(dt.timedelta(hours=3));L=threading.Lock()
-os.makedirs('/data/backups',exist_ok=True)
+BK='/data/backups';os.makedirs(BK,exist_ok=True);TGB=os.environ.get('TG_BASE','https://api.telegram.org')
 db=sqlite3.connect('/data/app.db',check_same_thread=False)
 db.executescript("create table if not exists docs(id text primary key,kind text,data text);create table if not exists log(ts text,act text,id text,old text,new text);create table if not exists inv(tok text primary key,client text,exp real);create table if not exists bind(tg integer primary key,client text)")
 FAIL={};TRY={};BOT=[os.environ.get('BOT_USERNAME','').lstrip('@') or None]
@@ -20,7 +20,7 @@ def who(init):
         if hmac.compare_digest(hmac.new(key,s.encode(),hashlib.sha256).hexdigest(),h) and time.time()-int(q['auth_date'])<86400:return json.loads(q['user'])['id']
     except Exception:pass
 def tg(method,data):
-    return json.load(urllib.request.urlopen(urllib.request.Request(f'https://api.telegram.org/bot{TOK}/{method}',json.dumps(data).encode(),{'Content-Type':'application/json'}),timeout=20))
+    return json.load(urllib.request.urlopen(urllib.request.Request(f'{TGB}/bot{TOK}/{method}',json.dumps(data).encode(),{'Content-Type':'application/json'}),timeout=20))
 def _say(t):
     try:tg('sendMessage',{'chat_id':OWNER,'text':t})
     except Exception as e:print('say',e)
@@ -51,6 +51,48 @@ def mine(cid):
         if d['client']==cid:
             out.append({k:d.get(k) for k in('n','start','pay','last','paid','early','shift','defer','pen','status','contract','type')}|{'id':i,'bike':(doc(d['bike']) or {}).get('name','')})
     return {'role':'client','name':c.get('name',''),'deals':out,'dd':(doc('cfg') or {}).get('dd',2)}
+def dump():
+    with L:
+        return json.dumps({'v':1,'ts':dt.datetime.now(MSK).isoformat(),'docs':[{'id':i,'kind':k,'data':json.loads(x)} for i,k,x in db.execute('select id,kind,data from docs')],
+        'bind':[[a,c] for a,c in db.execute('select tg,client from bind')],'log':[list(r) for r in db.execute('select ts,act,id,old,new from log')]},ensure_ascii=False).encode()
+def send_doc(name,data,cap):
+    bd='b'+secrets.token_hex(12)
+    fld=lambda k,v:f'--{bd}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+    body=fld('chat_id',OWNER)+fld('caption',cap)+f'--{bd}\r\nContent-Disposition: form-data; name="document"; filename="{name}"\r\nContent-Type: application/json\r\n\r\n'.encode()+data+f'\r\n--{bd}--\r\n'.encode()
+    r=json.load(urllib.request.urlopen(urllib.request.Request(f'{TGB}/bot{TOK}/sendDocument',body,{'Content-Type':'multipart/form-data; boundary='+bd}),timeout=90))
+    if not r.get('ok'):raise RuntimeError('Telegram отказал')
+def backup_tg(why):
+    n=dt.datetime.now(MSK);d=dump()
+    send_doc(f'velo-{n:%Y-%m-%d-%H%M}.json',d,f'{why}, {n:%d.%m.%Y %H:%M}. Храните файл в тайне: в нём данные клиентов.')
+def snap(pre):
+    b=sqlite3.connect(f'{BK}/{pre}-{dt.datetime.now(MSK):%Y-%m-%d-%H%M%S}.db');db.backup(b);b.close()
+    for f in sorted(x for x in os.listdir(BK) if x.startswith(pre+'-'))[:-(30 if pre=='app' else 5)]:os.remove(f'{BK}/{f}')
+ID=re.compile(r'[a-z0-9]{1,16}')
+def restore(b):
+    """returns (code, reply). Replaces docs and bind with the backup content; the audit log is kept."""
+    try:
+        if not isinstance(b,dict) or b.get('v')!=1:return 400,'Это не файл копии (или файл от другой версии).'
+        docs=b['docs'];bind=b.get('bind',[]);lg=b.get('log',[])
+        if not isinstance(docs,list) or not isinstance(bind,list) or not isinstance(lg,list) or len(docs)>20000:return 400,'Файл повреждён.'
+        seen=set();rows=[]
+        for x in docs:
+            i,k,d=x['id'],x['kind'],x['data']
+            if not isinstance(i,str) or not ID.fullmatch(i) or k not in('client','bike','deal','cfg') or not isinstance(d,dict) or i in seen:return 400,'Файл повреждён: неверная запись.'
+            seen.add(i);rows.append((i,k,json.dumps(d)))
+        bi=[(int(a),str(c)) for a,c in bind if ID.fullmatch(str(c))]
+        lg=[tuple(None if y is None else str(y) for y in r) for r in lg if isinstance(r,list) and len(r)==5][-100000:]
+    except Exception:return 400,'Файл повреждён.'
+    with L:
+        snap('pre-restore')
+        try:
+            empty=not db.execute('select 1 from log limit 1').fetchone()
+            db.execute('delete from docs');db.execute('delete from bind');db.execute('delete from inv')
+            db.executemany('insert into docs values(?,?,?)',rows);db.executemany('insert or replace into bind values(?,?)',bi)
+            if empty:db.executemany('insert into log values(?,?,?,?,?)',lg)
+            db.execute('insert into log values(?,?,?,?,?)',(dt.datetime.now(MSK).isoformat(),'restore','',None,json.dumps({'docs':len(rows),'from':b.get('ts')})));db.commit()
+        except Exception as e:
+            db.rollback();print('restore',e);return 500,'Не удалось восстановить, данные не изменены.'
+    return 200,len(rows)
 class H(BaseHTTPRequestHandler):
     def send(s,c,b,t='application/json'):
         s.send_response(c);s.send_header('Content-Type',t)
@@ -84,10 +126,16 @@ class H(BaseHTTPRequestHandler):
         u=s.user()
         if u is None:return s.send(403,b'{}')
         n=int(s.headers.get('Content-Length',0))
-        if n>3000000:return s.send(413,b'{}')
+        if n>(40000000 if s.path=='/api/restore' and u==OWNER else 3000000):return s.send(413,b'{}')
         try:b=json.loads(s.rfile.read(n))
         except Exception:return s.send(400,b'{}')
         p=s.path;ts=dt.datetime.now(MSK).isoformat();t=time.time()
+        if u==OWNER and p=='/api/backup':
+            try:backup_tg('Копия по запросу')
+            except Exception as e:print('backup',e);return s.send(502,json.dumps({'err':'Telegram не принял файл. Проверьте, что вы нажимали Start в чате с ботом.'}).encode())
+            return s.send(200,b'{}')
+        if u==OWNER and p=='/api/restore':
+            c,r=restore(b);return s.send(c,json.dumps({'docs':r} if c==200 else {'err':r}).encode())
         with L:
             if u==OWNER:
                 if p in('/api/put','/api/del'):
@@ -132,12 +180,12 @@ def job():
         if key!=last and n.hour in(3,10):
             last=key
             try:
-                with L:
-                    if n.hour==3:
-                        b=sqlite3.connect(f'/data/backups/app-{n.date()}.db');db.backup(b);b.close()
-                        for f in sorted(os.listdir('/data/backups'))[:-30]:os.remove('/data/backups/'+f)
-                    else:ds=[json.loads(d) for (d,) in db.execute("select data from docs where kind='deal'")]
-                if n.hour==10:
+                if n.hour==3:
+                    with L:snap('app')
+                    try:backup_tg('Ночная копия')
+                    except Exception as e:print('backup',e);say('Не удалось отправить ночную копию в Telegram. Откройте Настройки → Резервная копия и отправьте вручную.')
+                else:
+                    with L:ds=[json.loads(d) for (d,) in db.execute("select data from docs where kind='deal'")]
                     c=due_today(ds,n.date());say(f'Сегодня платят клиентов: {c}' if c else 'Сегодня платежей нет')
             except Exception as e:print(e)
         time.sleep(30)
