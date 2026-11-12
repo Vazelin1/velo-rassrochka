@@ -55,34 +55,13 @@ def dump():
     with L:
         return json.dumps({'v':1,'ts':dt.datetime.now(MSK).isoformat(),'docs':[{'id':i,'kind':k,'data':json.loads(x)} for i,k,x in db.execute('select id,kind,data from docs')],
         'bind':[[a,c] for a,c in db.execute('select tg,client from bind')],'log':[list(r) for r in db.execute('select ts,act,id,old,new from log')]},ensure_ascii=False).encode()
-def send_doc(name,data,cap):
-    bd='b'+secrets.token_hex(12)
-    fld=lambda k,v:f'--{bd}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
-    body=fld('chat_id',OWNER)+fld('caption',cap)+f'--{bd}\r\nContent-Disposition: form-data; name="document"; filename="{name}"\r\nContent-Type: application/json\r\n\r\n'.encode()+data+f'\r\n--{bd}--\r\n'.encode()
-    r=json.load(urllib.request.urlopen(urllib.request.Request(f'{TGB}/bot{TOK}/sendDocument',body,{'Content-Type':'multipart/form-data; boundary='+bd}),timeout=40))
-    if not r.get('ok'):raise RuntimeError('Telegram отказал')
-BS='/data/last_backup.json'
+DL={};TTL=int(os.environ.get('DL_TTL','120'));BS='/data/last_download.json'
 def bget():
     try:return json.load(open(BS))
     except Exception:return None
-def bset(ok,err=''):
-    o=bget() or {};t=dt.datetime.now(MSK).isoformat()
-    try:open(BS,'w').write(json.dumps({'ts':t,'ok':ok,'err':err,'ok_ts':t if ok else o.get('ok_ts')}))
+def bset():
+    try:open(BS,'w').write(json.dumps({'ts':dt.datetime.now(MSK).isoformat()}))
     except Exception as e:print('bset',e)
-def terr(e):
-    if isinstance(e,urllib.error.HTTPError):
-        if e.code in(400,403):return 'Бот не может написать вам. Откройте чат с ботом, нажмите «Запустить» (или отправьте /start) и повторите.'
-        if e.code==401:return 'Telegram не принял токен бота. Проверьте BOT_TOKEN на сервере.'
-        if e.code==413:return 'Файл копии больше 50 МБ, Telegram его не принимает.'
-        return f'Telegram вернул ошибку {e.code}.'
-    if isinstance(e,OSError):return 'Сервер не может связаться с Telegram (нет связи или адрес недоступен).'
-    return 'Не удалось отправить файл.'
-def backup_tg(why):
-    n=dt.datetime.now(MSK)
-    try:send_doc(f'velo-{n:%Y-%m-%d-%H%M}.json',dump(),f'{why}, {n:%d.%m.%Y %H:%M}. Храните файл в тайне: в нём данные клиентов.')
-    except Exception as e:
-        m=terr(e);bset(False,m);print('backup',type(e).__name__,e);raise RuntimeError(m)
-    bset(True)
 def snap(pre):
     b=sqlite3.connect(f'{BK}/{pre}-{dt.datetime.now(MSK):%Y-%m-%d-%H%M%S}.db');db.backup(b);b.close()
     for f in sorted(x for x in os.listdir(BK) if x.startswith(pre+'-'))[:-(30 if pre=='app' else 5)]:os.remove(f'{BK}/{f}')
@@ -113,9 +92,9 @@ def restore(b):
             db.rollback();print('restore',e);return 500,'Не удалось восстановить, данные не изменены.'
     return 200,len(rows)
 class H(BaseHTTPRequestHandler):
-    def send(s,c,b,t='application/json'):
-        s.send_response(c);s.send_header('Content-Type',t)
-        for k,v in HD.items():s.send_header(k,v)
+    def send(s,c,b,t='application/json',x=None):
+        s.send_response(c);s.send_header('Content-Type',t);s.send_header('Content-Length',str(len(b)))
+        for k,v in {**HD,**(x or {})}.items():s.send_header(k,v)
         s.end_headers();s.wfile.write(b)
     def user(s):
         ip=(s.headers.get('X-Forwarded-For','').split(',')[0].strip() or s.client_address[0]);t=time.time()
@@ -137,6 +116,12 @@ class H(BaseHTTPRequestHandler):
                     b=db.execute('select client from bind where tg=?',(u,)).fetchone()
                     r={'role':'owner','backup':bget()} if u==OWNER else mine(b[0]) if b else {'role':'new'}
             return s.send(200,json.dumps(r).encode())
+        if s.path.startswith('/dl/'):
+            ip=(s.headers.get('X-Forwarded-For','').split(',')[0].strip() or s.client_address[0]);t=time.time();ip=('dl',ip);FAIL[ip]=[x for x in FAIL.get(ip,[]) if x>t-600]
+            for a in [a for a,e in DL.items() if e<t]:DL.pop(a,None)
+            if len(FAIL[ip])>=10 or DL.get(s.path[4:],0)<t:FAIL[ip].append(t);return s.send(404,b'')
+            d=dump();bset()
+            return s.send(200,d,'application/octet-stream',{'Content-Disposition':f'attachment; filename="velo-{dt.datetime.now(MSK):%Y-%m-%d-%H%M}.json"','Cache-Control':'no-store'})
         f={'/':'index.html','/calc.js':'calc.js'}.get(s.path)
         if not f:return s.send(404,b'')
         s.send(200,open('static/'+f,'rb').read(),'text/html; charset=utf-8' if f[-1]=='l' else 'application/javascript')
@@ -149,10 +134,9 @@ class H(BaseHTTPRequestHandler):
         try:b=json.loads(s.rfile.read(n))
         except Exception:return s.send(400,b'{}')
         p=s.path;ts=dt.datetime.now(MSK).isoformat();t=time.time()
-        if u==OWNER and p=='/api/backup':
-            try:backup_tg('Копия по запросу')
-            except Exception as e:return s.send(502,json.dumps({'err':str(e)},ensure_ascii=False).encode())
-            return s.send(200,b'{}')
+        if u==OWNER and p=='/api/dl':
+            k=secrets.token_urlsafe(16);DL[k]=t+TTL
+            return s.send(200,json.dumps({'url':'/dl/'+k,'name':f'velo-{dt.datetime.now(MSK):%Y-%m-%d-%H%M}.json'}).encode())
         if u==OWNER and p=='/api/restore':
             c,r=restore(b);return s.send(c,json.dumps({'docs':r} if c==200 else {'err':r}).encode())
         with L:
@@ -201,8 +185,6 @@ def job():
             try:
                 if n.hour==3:
                     with L:snap('app')
-                    try:backup_tg('Ночная копия')
-                    except Exception as e:say(f'Не удалось отправить ночную копию в Telegram. {e} Откройте Настройки → Резервная копия и отправьте вручную.')
                 else:
                     with L:ds=[json.loads(d) for (d,) in db.execute("select data from docs where kind='deal'")]
                     c=due_today(ds,n.date());say(f'Сегодня платят клиентов: {c}' if c else 'Сегодня платежей нет')
