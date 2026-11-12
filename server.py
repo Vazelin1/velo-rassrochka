@@ -64,6 +64,7 @@ class H(BaseHTTPRequestHandler):
         if u is None:FAIL[ip].append(t)
         return u
     def do_GET(s):
+        s.path=s.path.split('?')[0].split('#')[0]
         if s.path in('/api/all','/api/me'):
             u=s.user()
             if u is None:return s.send(403,b'{}')
@@ -79,6 +80,7 @@ class H(BaseHTTPRequestHandler):
         if not f:return s.send(404,b'')
         s.send(200,open('static/'+f,'rb').read(),'text/html; charset=utf-8' if f[-1]=='l' else 'application/javascript')
     def do_POST(s):
+        s.path=s.path.split('?')[0]
         u=s.user()
         if u is None:return s.send(403,b'{}')
         n=int(s.headers.get('Content-Length',0))

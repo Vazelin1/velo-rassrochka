@@ -14,15 +14,18 @@ label{display:block;font-size:13px;color:var(--mu);margin:12px 2px 2px}input,sel
 .th{position:relative;display:inline-block;margin:6px 8px 0 0}.th img{width:76px;height:76px;object-fit:cover;border-radius:14px}.th i{position:absolute;top:-6px;right:-6px;background:var(--er);color:#fff;border-radius:50%;width:22px;height:22px;text-align:center;font-style:normal;line-height:22px}
 .pv{background:var(--ac2);border-radius:18px;padding:14px;margin:14px 0}.bar{height:10px;background:var(--ln);border-radius:6px;margin:10px 0}.bar i{display:block;height:10px;background:var(--ok);border-radius:6px}
 nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--c);border-top:1px solid var(--ln);padding:6px 4px 14px}nav button{flex:1;margin:0;background:none;color:var(--mu);font-size:11px;font-weight:500;padding:6px 0;border-radius:0}nav button b{display:block;font-size:22px;font-weight:400}nav button.pl b{background:var(--ac);color:#fff;width:46px;height:46px;border-radius:50%;margin:-20px auto 2px;line-height:46px;box-shadow:0 4px 12px rgba(70,90,80,.3)}.st{padding:26px 18px;font-size:22px;font-weight:700;color:#fff;text-align:center;background:var(--ok)}.st.y{background:#E0B14A}.st.r{background:var(--er)}.st.dr{background:#B5453A}button.big.g{background:var(--ac2);color:var(--ac)}</style></head><body>
-<div id="app"></div><nav><button onclick="nav('home')"><b>⌂</b>Главная</button><button onclick="nav('base')"><b>▤</b>База</button><button class="pl" onclick="nav('add')"><b>+</b>Добавить</button><button onclick="nav('rep')"><b>◷</b>Отчёты</button><button onclick="nav('set')"><b>⚙</b>Настройки</button></nav>
+<div id="app"><p class=p>Загрузка…</p></div><nav><button onclick="nav('home')"><b>⌂</b>Главная</button><button onclick="nav('base')"><b>▤</b>База</button><button class="pl" onclick="nav('add')"><b>+</b>Добавить</button><button onclick="nav('rep')"><b>◷</b>Отчёты</button><button onclick="nav('set')"><b>⚙</b>Настройки</button></nav>
 <script>
 const T=Telegram.WebApp;T.ready();T.expand();
+const showErr=t=>{const a=document.getElementById('app');if(a)a.innerHTML='<p class=p>Ошибка: '+String(t).replace(/</g,'&lt;')+'</p>'};
+window.onerror=(m,u,l)=>showErr(m+' (строка '+l+')');window.addEventListener('unhandledrejection',e=>showErr((e.reason&&e.reason.message)||e.reason));
+const startParam=()=>{const u=T.initDataUnsafe||{};if(u.start_param)return u.start_param;const x=(location.search+'&'+location.hash.replace(/^#/,'')).match(/tgWebAppStartParam=([^&]+)/);return x?decodeURIComponent(x[1]):''};
 let S={clients:[],bikes:[],deals:[],cfg:{}},V=[['home']],tab='clients',ph=[],allSch=false;
 const $=s=>document.querySelector(s),v=s=>$(s).value,m=n=>Math.round(n).toLocaleString('ru')+' ₽',fmt=d=>d.split('-').reverse().join('.');
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const nm=id=>(S.clients.find(c=>c.id==id)||{}).name||'?',bk=id=>(S.bikes.find(c=>c.id==id)||{}).name||'?';
 const MT=['','наличные','СБП','перевод'],EA=()=>S.cfg.early||10000;
-const api=async(p,b)=>{const r=await fetch(p,{method:b?'POST':'GET',headers:{'X-Init':T.initData,'Content-Type':'application/json'},body:b&&JSON.stringify(b)});if(!r.ok)throw 0;return r.json()};
+const api=async(p,b)=>{const r=await fetch(p,{method:b?'POST':'GET',headers:{'X-Init':T.initData,'Content-Type':'application/json'},body:b&&JSON.stringify(b)});if(!r.ok)throw 'код '+r.status;return r.json()};
 async function load(){try{const a=await api('/api/all');S={clients:[],bikes:[],deals:[],cfg:{}};a.forEach(d=>{if(d.kind=='cfg')S.cfg=d.data;else S[d.kind+'s'].push({...d.data,id:d.id})});render()}catch(e){$('#app').innerHTML='<p class=p>Доступ запрещён или нет связи. Откройте приложение из Telegram-бота.</p>'}}
 async function put(kind,o){if(!o.id){o.id=Math.random().toString(36).slice(2,10);o.created=new Date().toISOString()}await api('/api/put',{kind,id:o.id,data:o});await load()}
 const nav=s=>{V=[[s]];allSch=false;render()},go=(s,a)=>{V.push([s,a]);allSch=false;render()},back=()=>{if(V.length>1)V.pop();render()};
@@ -90,7 +93,7 @@ function ask(text,yes){const o=document.createElement('div');o.style.cssText='po
 function defAsk(id){ask(`Отсрочка на ${ME.dd} дн.: ближайший платёж и все следующие сдвинутся на ${ME.dd} дн., неустойка в эти дни начисляться не будет. Отсрочку можно использовать только один раз за весь срок выкупа. Применить?`,async()=>{try{await api('/api/defer',{id});ME=await api('/api/me');crender()}catch(e){alert('Отсрочка недоступна: возможно, она уже использована или есть просрочка.')}})}
 async function claim(tok){try{await api('/api/claim',{tok,phone:v('#ph')});location.reload()}catch(e){alert('Не удалось войти. Проверьте номер телефона и ссылку.')}}
 function clientUI(){document.querySelector('nav').style.display='none';
-if(ME.role=='new'){const tok=(T.initDataUnsafe||{}).start_param;$('#app').innerHTML=tok?`<div class=p><h2>Вход</h2><p class=mu>Введите номер телефона, который вы сообщили владельцу.</p><input id=ph type=tel placeholder="+7 ..."><button class=big onclick="claim('${esc(tok)}')">Войти</button></div>`:'<p class=p>Откройте ссылку, которую прислал владелец.</p>';return}
+if(ME.role=='new'){const tok=startParam();$('#app').innerHTML=tok?`<div class=p><h2>Вход</h2><p class=mu>Введите номер телефона, который вы сообщили владельцу.</p><input id=ph type=tel placeholder="+7 ..."><button class=big onclick="claim('${esc(tok)}')">Войти</button></div>`:'<p class=p>Откройте ссылку, которую прислал владелец.</p>';return}
 crender()}
 function crender(){const d=ME.deals.find(x=>x.status=='active')||ME.deals[0];if(!d){$('#app').innerHTML='<p class=p>Выкупов пока нет.</p>';return}$('#app').innerHTML=({main:cmain,sch:csch,hist:chist})[CV[CV.length-1]](d);scrollTo(0,0)}
 function cmain(d){const I=info(d),t=C.today(),x=I.x,k=I.sc.length-I.un.length;let cl='g',tx='Период оплачен, всё хорошо';
@@ -106,6 +109,6 @@ o.innerHTML=`<div class=card style="margin:0;width:100%"><h3 style="margin-top:0
 $('#cl').onclick=()=>o.remove();$('#sh').onclick=()=>T.openTelegramLink('https://t.me/share/url?url='+encodeURIComponent(link));
 $('#cp').onclick=async()=>{try{await navigator.clipboard.writeText(link);alert('Скопировано')}catch(e){$('#lk').select()}}}catch(e){alert('Не удалось создать ссылку. Проверьте BOT_USERNAME в настройках сервера.')}}
 async function unbind(cid){if(confirm('Сбросить доступ клиента? Ему понадобится новая ссылка.')){await api('/api/unbind',{client:cid});alert('Доступ сброшен')}}
-async function boot(){try{ME=await api('/api/me');if(ME.role=='owner')load();else clientUI()}catch(e){$('#app').innerHTML='<p class=p>Доступ запрещён или нет связи. Откройте приложение из Telegram.</p>'}}
+async function boot(){try{ME=await api('/api/me');if(ME.role=='owner')load();else clientUI()}catch(e){$('#app').innerHTML='<p class=p>Не удалось войти ('+e+'). Откройте приложение из Telegram по ссылке от владельца.</p>'}}
 boot();
 </script></body></html>
