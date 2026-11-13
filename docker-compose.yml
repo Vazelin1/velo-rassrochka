@@ -1,14 +1,9 @@
+# Выкуп после перехода на общий Caddy (папка ~/rent/proxy). Свой Caddy больше не запускается.
 services:
   app:
     build: .
     restart: always
     env_file: .env
     volumes: ["./data:/data"]
-  caddy:
-    image: caddy:2
-    restart: always
-    ports: ["80:80","443:443"]
-    environment: [DOMAIN]
-    env_file: .env
-    volumes: ["./Caddyfile:/etc/caddy/Caddyfile","caddy:/data"]
-volumes: {caddy: {}}
+    networks: {web: {aliases: [velo]}}
+networks: {web: {external: true}}
