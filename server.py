@@ -9,10 +9,10 @@ FAIL={};TRY={};BOT=[os.environ.get('BOT_USERNAME','').lstrip('@') or None]
 HD={'X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Strict-Transport-Security':'max-age=31536000',
 'Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self' https://*.telegram.org"}
 KINDS=('client','bike','deal','cfg','admin')
-PERMS=('pay','early','clients','deals','bikes','reports')
+PERMS=('pay','early','pen','clients','deals','bikes','reports')
 FINP={'deals','bikes','reports'}  # rights that let an administrator see prices, purchase costs and profit
 HID={'deal':('total','tax','acq','cost','disc','mk','extras','down','refund'),'bike':('cost','exp','wo')}
-PUBCFG=('id','dd','early','ed','pen')
+PUBCFG=('id','dd','early','ed','pen','dmin','dbd')
 ID=re.compile(r'[a-z0-9]{1,16}')
 NO=object()
 def strip(x):
@@ -86,6 +86,12 @@ def notify_deal(old,new,ro,adm):
             if k not in O:
                 rest=sum(x['amt'] for x in sc if str(x['k']) not in P)
                 say(f"Оплата принята ({adm}): {cn}, {rub((p.get('amt') or 0)+(p.get('pen') or 0))}, период {k} из {len(sc)}, {p.get('method','')}. Осталось по графику: {rub(rest)}.")
+        g=new.get('debt')
+        for k,p in P.items():
+            if k not in O and p.get('part') and g and g.get('amt')>0:
+                say(f"Остаток по периоду {k} ({cn}): {rub(g['amt'])}, срок без неустойки до {dm(dt.date.fromisoformat(g['due']))}.")
+        if len(new.get('dpays') or [])>len(old.get('dpays') or []):
+            e=new['dpays'][-1];say(f"Оплата долга принята ({adm}): {cn}, {rub((e.get('amt') or 0)+(e.get('pen') or 0))}, {e.get('method','')}."+(" Долг закрыт." if not (g and g.get('amt')>0) else f" Остаток долга: {rub(g['amt'])}."))
         if len(new.get('early') or [])>len(old.get('early') or []):
             e=new['early'][-1];say(f"Досрочный платёж принят ({adm}): {cn}, {rub(e.get('paid') or e.get('amt') or 0)}.")
     if (new.get('shift') or 0)>(old.get('shift') or 0) and new.get('status')=='active':
@@ -98,7 +104,7 @@ def mine(cid):
     for i,d in db.execute("select id,data from docs where kind='deal'").fetchall():
         d=json.loads(d)
         if d['client']==cid:
-            out.append({k:d.get(k) for k in('n','start','pay','last','paid','early','shift','defer','pen','status','contract','type')}|{'id':i,'bike':(doc(d['bike']) or {}).get('name','')})
+            out.append({k:d.get(k) for k in('n','start','pay','last','paid','early','shift','defer','pen','status','contract','type','debt','dpays','pw','np')}|{'id':i,'bike':(doc(d['bike']) or {}).get('name','')})
     return {'role':'client','name':c.get('name',''),'deals':out,'dd':(doc('cfg') or {}).get('dd',2)}
 def adm_of(u):
     """The administrator whose Telegram ID is u: (id, data) or None."""
@@ -120,7 +126,7 @@ def vw(k,d,f):
 def okkey(P,k,x,m):
     """May an administrator with rights P change field x of a document of kind k?"""
     if k=='deal':
-        n={'paid':'pay','early':'early','shift':'early','defer':'early'}.get(x)
+        n={'paid':'pay','debt':'pay','dpays':'pay','early':'early','shift':'early','defer':'early','pw':'pen','np':'pen'}.get(x)
         if n:return n in P
         if x in('bike','swaps'):return 'bikes' in P
         if x in('status','closed'):return ('bikes' if m.get('status')=='lost' else 'deals') in P
@@ -355,7 +361,16 @@ def job():
                 else:morning(n.date())
             except Exception as e:print(e)
         time.sleep(30)
+def migrate():
+    """One-time: administrators who could give early payments / deferrals also get the new right «Неустойка»."""
+    with L:
+        if db.execute("select 1 from ntf where k='mig:pen'").fetchone():return
+        for i,d in db.execute("select id,data from docs where kind='admin'").fetchall():
+            d=json.loads(d)
+            if 'early' in d.get('perms',[]) and 'pen' not in d['perms']:d['perms']=[q for q in PERMS if q in d['perms']+['pen']];save(i,'admin',d)
+        db.execute("insert into ntf values('mig:pen')");db.commit()
 if __name__=='__main__':
+    migrate()
     threading.Thread(target=job,daemon=True).start()
     threading.Thread(target=botname,daemon=True).start()
     ThreadingHTTPServer(('',int(os.environ.get('PORT','8080'))),H).serve_forever()
