@@ -143,6 +143,24 @@ nav .bar{pointer-events:auto;display:flex;width:100%;max-width:520px;background:
 .rpr{min-height:62px}
 
 :root[data-theme=dark]{--n0:#223A2E;--n1:#3C3319;--n2:#5A4818;--n3:#8A6A12;--nxt:#ECF1EE;--wd:#E3B34F;--wdb:#6B5316;--wdt:#FFEFC2}
+/* payment by QR */
+.cq{margin-top:14px}.cq .btn{margin-top:0}
+.cq2{display:flex;align-items:center;gap:10px;margin:12px 16px 0}
+.cq2 .btn{flex:1;margin-top:0}
+.cq2 .qi{position:static;transform:none;flex:none;width:40px;height:40px}
+.cn.bl{border:2px solid var(--pine)}
+.cn.bl .tag{display:inline-flex;align-items:center;gap:6px;max-width:calc(100% - 52px);background:var(--pine);color:var(--on);border-radius:999px;padding:5px 13px 5px 9px;font-size:14px;line-height:1.2;font-weight:700;margin:0 0 10px}
+.cn.bl .big{color:var(--pine)}
+.card.bill{border:2px solid var(--pine)}
+.card.bill .acts{margin:12px 0 0}
+.card.bill .acts .btn{flex:1 1 auto;margin-top:0}
+.qrbox{text-align:center}
+.qrimg{width:220px;height:220px;margin:0 auto;display:block;border-radius:16px;background:#fff}
+.qh{margin:12px 2px 0;font-size:13px;line-height:1.4;color:var(--mu)}
+.qh b{color:var(--ink);font-weight:650}
+.hk{margin:6px 0 0;padding:12px 14px;border-radius:14px;background:var(--fill);font-size:13px;word-break:break-all;user-select:all}
+.wr{display:grid;gap:10px;margin:14px 16px 0}.wr .btn{margin:0}
+.center .wr{margin:20px 0 0}
 </style></head><body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
 <symbol id="i-home" viewBox="0 0 24 24"><path d="M3.5 11 12 3.5 20.5 11M5.5 9.5V20h4.5v-5.5h4V20h4.5V9.5"/></symbol>
@@ -152,6 +170,7 @@ nav .bar{pointer-events:auto;display:flex;width:100%;max-width:520px;background:
 <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6.5h8M17 6.5h3M4 12h3M12 12h8M4 17.5h10M19 17.5h1"/><circle cx="14.5" cy="6.5" r="2.3"/><circle cx="9.5" cy="12" r="2.3"/><circle cx="16.5" cy="17.5" r="2.3"/></symbol>
 <symbol id="i-calc" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="3.2"/><path d="M8.5 7.5h7M8.5 12h.01M12 12h.01M15.5 12h.01M8.5 16h.01M12 16h.01M15.5 16h.01"/></symbol>
 <symbol id="i-phone" viewBox="0 0 24 24"><path d="M5.2 4h3.3l1.7 4.3-2.1 1.4a11.5 11.5 0 0 0 5.2 5.2l1.4-2.1 4.3 1.7v3.3a1.8 1.8 0 0 1-1.9 1.8A15.6 15.6 0 0 1 3.4 5.9 1.8 1.8 0 0 1 5.2 4z"/></symbol>
+<symbol id="i-chat" viewBox="0 0 24 24"><path d="M6 4h12a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3h-6.5L7 20.5V17H6a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3z"/></symbol>
 <symbol id="i-send" viewBox="0 0 24 24"><path d="M21 3 10.5 13.5M21 3l-6.5 18-4-7.5L3 9.5z"/></symbol>
 <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5 9.5 17 19 7.5"/></symbol>
 <symbol id="i-left" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
@@ -214,9 +233,9 @@ const api=async(p,b)=>{const r=await fetch(p,{method:b?'POST':'GET',headers:{'X-
 window.onerror=(msg,u,l)=>{uiAlert('Ошибка: '+msg+' (строка '+l+')')};
 window.addEventListener('unhandledrejection',e=>{const r=e.reason;e.preventDefault();if(r===ABORT)return;uiAlert('Ошибка: '+((r&&r.message)||r))});
 /* ---------- state and roles */
-let S={clients:[],bikes:[],deals:[],admins:[],cfg:{}},V=[['home']],ME,tab='clients',qs='',allSch=false,ph=[],lastLoad=0;
+let S={clients:[],bikes:[],deals:[],admins:[],bills:[],unks:[],tch:{},cfg:{}},V=[['home']],ME,tab='clients',qs='',allSch=false,ph=[],lastLoad=0;
 const isOwner=()=>ME&&ME.role=='owner',can=p=>isOwner()||!!(ME&&(ME.perms||[]).includes(p)),canFin=()=>isOwner()||!!(ME&&ME.fin);
-async function load(quiet){const a=await api('/api/all');S={clients:[],bikes:[],deals:[],admins:[],cfg:{}};a.forEach(d=>{if(d.kind=='cfg')S.cfg=d.data;else S[d.kind+'s'].push({...d.data,id:d.id})});lastLoad=Date.now();if(!quiet)render(true)}
+async function load(quiet){const a=await api('/api/all');S={clients:[],bikes:[],deals:[],admins:[],bills:[],unks:[],tch:{},cfg:{}};a.forEach(d=>{if(d.kind=='cfg')S.cfg=d.data;else if(d.kind=='tch')S.tch=d.data;else if(S[d.kind+'s'])S[d.kind+'s'].push({...d.data,id:d.id})});lastLoad=Date.now();if(!quiet)render(true)}
 async function put(kind,o){if(!o.id){o.id=Math.random().toString(36).slice(2,10);o.created=new Date().toISOString()}
 try{await api('/api/put',{kind,id:o.id,data:o})}catch(e){if(e=='conflict'){await load();await uiAlert('Эти данные только что изменились (другой администратор или вход). Экран обновлён, повторите действие.');throw ABORT}
 if(e=='код 403'){await uiAlert('У вас нет прав на это действие.');throw ABORT}throw e}
@@ -254,6 +273,35 @@ else st.forEach((s,i)=>{const a0=-90+360/N*i+g/2,a1=-90+360/N*(i+1)-g/2,[x0,y0]=
 return `<svg class="wh ${o.round?'rd':''} ${o.an?'an':''}" width=${Z} height=${Z} viewBox="0 0 ${Z} ${Z}" style="--w:${w}px" aria-hidden=true>${h}</svg>`}
 const whw=(st,o,inner,cls)=>`<div class=whw style="width:${o.size}px;height:${o.size}px">${wheel(st,o)}<div class="in ${cls||''}">${inner}</div></div>`;
 
+const QR=(()=>{const ECC=[0,10,16,26,18,24,16,18,22,22,26],NB=[0,1,1,1,2,2,4,4,4,5,5],AL=[[],[],[6,18],[6,22],[6,26],[6,30],[6,34],[6,22,38],[6,24,42],[6,26,46],[6,28,50]];
+const raw=v=>{let r=(16*v+128)*v+64;if(v>=2){const n=Math.floor(v/7)+2;r-=(25*n-10)*n-55;if(v>=7)r-=36}return r};
+const mul=(x,y)=>{let z=0;for(let i=7;i>=0;i--){z=(z<<1)^((z>>>7)*0x11D);z^=((y>>>i)&1)*x}return z};
+const rsDiv=d=>{const r=Array(d-1).fill(0).concat([1]);let root=1;for(let i=0;i<d;i++){for(let j=0;j<r.length;j++){r[j]=mul(r[j],root);if(j+1<r.length)r[j]^=r[j+1]}root=mul(root,2)}return r};
+const rsRem=(data,div)=>{const r=div.map(()=>0);for(const b of data){const f=b^r.shift();r.push(0);div.forEach((c,i)=>r[i]^=mul(c,f))}return r};
+function make(text){const bytes=[...new TextEncoder().encode(text)];let v=1;
+for(;v<=10;v++)if(4+(v<10?8:16)+8*bytes.length<=(Math.floor(raw(v)/8)-ECC[v]*NB[v])*8)break;if(v>10)throw 'Слишком длинный текст для QR';
+const dcw=Math.floor(raw(v)/8)-ECC[v]*NB[v],bb=[],ap=(x,l)=>{for(let i=l-1;i>=0;i--)bb.push((x>>>i)&1)};
+ap(4,4);ap(bytes.length,v<10?8:16);bytes.forEach(b=>ap(b,8));ap(0,Math.min(4,dcw*8-bb.length));ap(0,(8-bb.length%8)%8);for(let p=0xEC;bb.length<dcw*8;p^=0xEC^0x11)ap(p,8);
+const data=[];for(let i=0;i<bb.length;i+=8){let x=0;for(let j=0;j<8;j++)x=x<<1|bb[i+j];data.push(x)}
+const nb=NB[v],ec=ECC[v],rc=Math.floor(raw(v)/8),ns=nb-rc%nb,sl=Math.floor(rc/nb),div=rsDiv(ec),bl=[];
+for(let i=0,k=0;i<nb;i++){const d=data.slice(k,k+sl-ec+(i<ns?0:1));k+=d.length;const e=rsRem(d,div);if(i<ns)d.push(0);bl.push(d.concat(e))}
+const all=[];for(let i=0;i<bl[0].length;i++)bl.forEach((b,j)=>{if(i!=sl-ec||j>=ns)all.push(b[i])});
+const n=v*4+17,M=[...Array(n)].map(()=>Array(n).fill(false)),F=[...Array(n)].map(()=>Array(n).fill(false)),set=(x,y,d)=>{M[y][x]=d;F[y][x]=true};
+for(let i=0;i<n;i++){set(6,i,i%2==0);set(i,6,i%2==0)}
+const fin=(x,y)=>{for(let dy=-4;dy<=4;dy++)for(let dx=-4;dx<=4;dx++){const d=Math.max(Math.abs(dx),Math.abs(dy)),a=x+dx,b=y+dy;if(a>=0&&a<n&&b>=0&&b<n)set(a,b,d!=2&&d!=4)}};
+fin(3,3);fin(n-4,3);fin(3,n-4);const al=AL[v],L=al.length;
+al.forEach((a,i)=>al.forEach((b,j)=>{if(!(i==0&&j==0||i==0&&j==L-1||i==L-1&&j==0))for(let dy=-2;dy<=2;dy++)for(let dx=-2;dx<=2;dx++)set(a+dx,b+dy,Math.max(Math.abs(dx),Math.abs(dy))!=1)}));
+const fmt=mask=>{const d=mask;let r=d;for(let i=0;i<10;i++)r=(r<<1)^((r>>>9)*0x537);const bits=(d<<10|r)^0x5412,g=i=>((bits>>>i)&1)!=0;
+for(let i=0;i<=5;i++)set(8,i,g(i));set(8,7,g(6));set(8,8,g(7));set(7,8,g(8));for(let i=9;i<15;i++)set(14-i,8,g(i));
+for(let i=0;i<8;i++)set(n-1-i,8,g(i));for(let i=8;i<15;i++)set(8,n-15+i,g(i));set(8,n-8,true)};
+fmt(0);if(v>=7){let r=v;for(let i=0;i<12;i++)r=(r<<1)^((r>>>11)*0x1F25);const bits=v<<12|r;for(let i=0;i<18;i++){const t=((bits>>>i)&1)!=0,a=n-11+i%3,b=Math.floor(i/3);set(a,b,t);set(b,a,t)}}
+let i=0;for(let right=n-1;right>=1;right-=2){if(right==6)right=5;for(let vert=0;vert<n;vert++)for(let j=0;j<2;j++){const x=right-j,y=((right+1)&2)==0?n-1-vert:vert;
+if(!F[y][x]&&i<all.length*8){M[y][x]=((all[i>>>3]>>>(7-(i&7)))&1)!=0;i++}}}
+for(let y=0;y<n;y++)for(let x=0;x<n;x++)if(!F[y][x]&&(x+y)%2==0)M[y][x]=!M[y][x];fmt(0);return M}
+function svg(text,px=240){const M=make(text),n=M.length,q=4,s=n+2*q;px=s*Math.max(4,Math.floor(px/s));let p='';M.forEach((r,y)=>r.forEach((d,x)=>{if(d)p+=`M${x+q},${y+q}h1v1h-1z`}));
+return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${s} ${s}" width="${px}" height="${px}" shape-rendering="crispEdges" style="background:#fff;border-radius:14px;display:block;margin:0 auto"><path d="${p}" fill="#000"/></svg>`}
+return {make,svg}})();
+
 /* ---------- deals: schedule, status, colours */
 const act=()=>S.deals.filter(d=>d.status=='active'),dealOf=(k,id)=>act().find(d=>d[k]==id);
 /* days (late) are calendar days after the due date; penalty days (days) take a write-off (d.pw) and the «no penalty» periods (d.np) into account. g: debt left after a partial payment, with its own penalty. */
@@ -284,7 +332,7 @@ const strip=HDAYS.map(z=>`<button class="${z.i?'':'t'}" ${z.L.length?`onclick="d
 const bkw=bkWarn();
 return `<div class=hd><div><small>${dlong(t)}</small><h1>Главная</h1></div>${canFin()?`<button class=ib onclick="go('calcS')" aria-label="Калькулятор">${ic('calc')}</button>`:''}</div>
 <section class="hero ${calOpen?'open':''}"><button class=hh onclick=togCal() aria-expanded="${calOpen}" aria-controls=cal><span class=tx><span class=ht>${n0?`Сегодня платят ${n0}`:'Сегодня платежей нет'}</span><span class=hs>${wn?`За ближайшие 7 дней ждём ${m(wsum)}`:'На ближайшие 7 дней платежей нет'}</span></span><span class=chev>${ic('chev')}</span></button>
-<div class=cal id=cal><div><div class=wk>${strip}</div></div></div></section>${bkw}`+
+<div class=cal id=cal><div><div class=wk>${strip}</div></div></div></section>${bkw}${unkBlock()}`+
 (dbt.length?`<h2 class="sec ${dbt.some(a=>a.g.over)?'t-er':'t-wa'}"><span class=bdg aria-label="Должников: ${dbt.length}">${dbt.length}</span>Должники</h2><div class=grp>`+dbt.map(a=>dealRow(a,a.g.over?chip(`${a.g.late} ${dayWord(a.g.late)}`,'er'):chip(`до ${fs(a.g.due)}`,'wa'),`долг ${m(a.g.amt)}${a.g.pen?` + неустойка ${m(a.g.pen)}`:''}`,m(a.g.total))).join('')+'</div>':'')+
 (od.length?`<h2 class="sec t-er"><span class=bdg aria-label="Просрочек: ${od.length}">${od.length}</span>Просрочены, идёт неустойка</h2><div class=grp>`+od.map(a=>dealRow(a,chip(`${C.diff(t,a.od[0].due)} ${dayWord(C.diff(t,a.od[0].due))}`,'er'),oweSub(a),m(a.owe))).join('')+'</div>':'')+
 `<h2 class=sec>Ближайшие платежи</h2>`+(ok.length?`<div class=grp>`+ok.map(a=>{const n=C.diff(a.x.due,t);return dealRow(a,chip(n<=0?'сегодня':n==1?'завтра':`через ${n} ${dayWord(n)}`,n<=0?'er':n<=2?'wa':'ok'),`до ${fs(a.x.due)}, ${esc(bk(a.d.bike))}`,m(a.x.amt))}).join('')+'</div>':empty('cal','Платежей нет'))+
@@ -352,8 +400,9 @@ const wheelH=whw(states(d),{size:136,sw:12,round:true,gap:3,an:true},`<span clas
 return `${backBtn()}<div class=dh><h1>${esc(c.name)}</h1><div class=ph>${esc(c.phone)}</div><div class="mu sm">${esc(b.name||'—')}, договор ${esc(d.contract||'—')} от ${fmt(d.start)}${c.phones?'<br>'+esc(c.phones).replace(/\n/g,'<br>'):''}</div>
 <div class=acts><a class="btn sec" href="tel:${esc(c.phone)}">${ic('phone','s')}Позвонить</a>${c.tg?`<a class="btn sec" href="https://t.me/${esc(c.tg.replace('@',''))}">${ic('send','s')}Написать</a>`:''}</div></div>
 <div class=card><div class=pg>${wheelH}<div class=nx><div style="margin-bottom:8px">${chip(stt[0],stt[1])}</div>${on&&I.x?(I.od.length?`<button class=owb onclick="oweSheet('${d.id}')"><div class=mu>К оплате сейчас</div><div class=mid>${m(I.owe)}</div><div class=mu>${oweSub(I)}${ic('right','s')}</div></button>`:`<div class=mu>Следующий платёж</div><div class=mid>${m(I.x.amt)}</div><div class=mu>до ${fmt(I.x.due)}</div>`):on&&g?`<div class=mu>Остался долг</div><div class=mid>${m(g.total)}</div><div class=mu>${g.over?'срок прошёл':`до ${fmt(g.due)}`}</div>`:`<div class=mid>${on?'Всё оплачено':'Выкуп закрыт'}</div>${d.closed?`<div class=mu>${fmt(d.closed)}</div>`:''}`}</div></div></div>
-${I.od.length&&on?`<div class="note t-er">${ic('alert')}<div><b>Просрочка.</b> Неустойка сейчас: ${m(I.pen)}</div></div>`:''}${npn}${dcard}
+${I.od.length&&on?`<div class="note t-er">${ic('alert')}<div><b>Просрочка.</b> Неустойка сейчас: ${m(I.pen)}</div></div>`:''}${npn}${dcard}${on?openBills(d.id).map(b=>billCard(d,b)).join(''):''}
 ${on&&I.x?`<div class=acts>${can('pay')?`<button class="btn go blk lg" onclick="go('payS','${d.id}')">${ic('check')}Принять оплату</button>`:''}${can('early')?`<button class="btn sec tw" onclick="early('${d.id}')">${ic('bolt','s')}<span>Досрочно<small>${m(EA())}</small></span></button><button class="btn sec tw" onclick="defer('${d.id}')">${ic('clock','s')}<span>Отсрочка<small>${S.cfg.dd||2} ${dayWord(S.cfg.dd||2)}</small></span></button>`:''}</div>`:''}
+${on&&(I.x||I.g)&&can('pay')?`<div class=acts><button class="btn sec tw" onclick="qrDeal('${d.id}')">${ic('receipt','s')}<span>QR на оплату<small>показать клиенту</small></span></button><button class="btn sec tw" onclick="billS('${d.id}')">${ic('send','s')}<span>Выставить платёж<small>на любую сумму</small></span></button></div>`:''}
 <h2 class=sec>${allSch?'Весь график':'Ближайшие платежи'}</h2><div class=grp>${(allSch?I.sc:I.un.slice(0,3)).map(r).join('')||`<div class=empty>Все периоды оплачены</div>`}</div>
 <div class=acts><button class="btn sec blk" onclick="allSch=!allSch;render()">${allSch?'Скрыть график':'Показать весь график'}</button></div>${dps}
 ${A.length?`<h2 class=sec>Действия</h2><div class=grp>${A.map(a=>`<button class="row nl ${a[3]?'dn':''}" onclick="${a[2]}"><span class="gl ${a[3]?'t-er':''}">${ic(a[0])}</span><span class=tx><b>${a[1]}</b></span>${ic('right')}</button>`).join('')}</div>`:''}
@@ -513,6 +562,7 @@ const admTone=a=>a.disabled?['отключён','n']:a.tg?['вошёл','ok']:['
 function set(){const mk=S.cfg.mk||C.MK,ds=S.cfg.ds||[[30000,2],[50000,4]],tx=S.cfg.tax==null?7:S.cfg.tax,pn=S.cfg.pen==null?0.9:S.cfg.pen;
 return `<div class=hd><h1>Настройки</h1></div>
 <h2 class=sec>Администраторы</h2><div class=grp>${S.admins.map(a=>{const s=admTone(a);return `<button class=row onclick="go('fAdmin','${a.id}')"><span class="av t-${s[1]}">${esc(ini(a.name))}</span><span class=tx><b>${esc(a.name)}</b><span>${esc(a.phone)}</span></span><span class=rt>${chip(s[0],s[1])}</span></button>`}).join('')}<button class="row nl" onclick="go('fAdmin')"><span class=gl>${ic('plus')}</span><span class=tx><b>Добавить администратора</b><span>Телефон, права, ссылка для входа</span></span></button></div>
+${tchSec()}${contSec()}
 <h2 class=sec>Цены и расчёты</h2><div class=form style="padding-top:0"><h3>Наценка по срокам, %</h3><div class=f2>${Object.keys(mk.w).map(n=>`<label class=fld><span>${n} недель</span><input type=number inputmode=decimal data-n=${n} value=${mk.w[n]}></label>`).join('')}<label class=fld><span>Допы (второй аккумулятор)</span><input id=exm type=number inputmode=decimal value=${S.cfg.exm==null?24:S.cfg.exm}></label></div>
 <h3>Налог, эквайринг и неустойка</h3><div class=f2><label class=fld><span>Налог с выручки, %</span><input id=tax type=number step=any inputmode=decimal value=${tx}></label><label class=fld><span>Эквайринг по СБП, %</span><input id=acq type=number step=any inputmode=decimal value=${AQ()}></label><label class=fld><span>Неустойка, % за день</span><input id=pen type=number step=any inputmode=decimal value=${pn}></label></div>
 <h3>Скидка за первоначальный взнос</h3><div class=f2><label class=fld><span>Взнос 1, ₽</span><input id=da0 type=number inputmode=numeric value=${ds[0][0]}></label><label class=fld><span>Скидка 1, п.п.</span><input id=db0 type=number step=any inputmode=decimal value=${ds[0][1]}></label><label class=fld><span>Взнос 2, ₽</span><input id=da1 type=number inputmode=numeric value=${ds[1][0]}></label><label class=fld><span>Скидка 2, п.п.</span><input id=db1 type=number step=any inputmode=decimal value=${ds[1][1]}></label></div>
@@ -523,6 +573,16 @@ return `<div class=hd><h1>Настройки</h1></div>
 <h2 class=sec>Уведомления в Telegram</h2><div class=grp><label class=sw><span class=tx><b>Сообщения вам</b><span>Сводка в 10:00, оплаты от администраторов, входы, отсрочки клиентов</span></span><input type=checkbox ${S.cfg.nown?'checked':''} onchange="setNtf('nown',this)"></label><label class=sw><span class=tx><b>Напоминания клиентам</b><span>За день до платежа и в день платежа, подтверждение отсрочки</span></span><input type=checkbox ${S.cfg.ncli?'checked':''} onchange="setNtf('ncli',this)"></label></div><p class=sub style="margin:8px 20px 0">${S.cfg.nown||S.cfg.ncli?'':'Сейчас всё выключено. '}Сообщения отправляет бот с сервера. Если с сервера недоступен Telegram, они не доходят, а приложение работает как обычно.</p>
 <h2 class=sec>Резервная копия</h2><div class=card><p class=mu style="margin:0 0 12px">Скачивайте копию раз в 3 дня: приложение напомнит на главном экране. Файл сохранится на телефон, храните его в надёжном месте. Сервер сам делает копию каждую ночь и хранит 30 штук. В файле есть имена и телефоны клиентов и фото велосипедов: не пересылайте его посторонним.</p><p style="margin:0 0 12px;font-weight:650">${bkLast()}</p><div class=acts style="margin:0"><button class=btn onclick=downloadBackup(this)>${ic('down','s')}Скачать копию</button><button class="btn sec" onclick="$('#rf').click()">${ic('up','s')}Восстановить</button></div><input id=rf type=file accept=".json,application/json" hidden onchange="restoreFile(this)"></div>
 <h2 class=sec>Журнал</h2><div class=grp><button class="row nl" onclick="go('logS')"><span class=gl>${ic('list')}</span><span class=tx><b>Журнал действий</b><span>Кто и что менял: вы, администраторы, клиенты</span></span>${ic('right')}</button></div>`}
+/* links to the owner's Telegram and Max accounts: the client screen shows the buttons «Написать в Telegram» / «Написать в Max» when a link is set */
+const lkNorm=(x,k)=>{x=String(x||'').trim();if(!x)return'';
+if(k=='tg'){const q=x.match(/^(?:https?:\/\/)?(?:t\.me\/|telegram\.me\/)?@?([A-Za-z][A-Za-z0-9_]{4,31})\/?$/i);if(q)return'https://t.me/'+q[1];return /^https:\/\/(t|telegram)\.me\/\S+$/i.test(x)?x:null}
+const u=/^https?:\/\//i.test(x)?x.replace(/^http:/i,'https:'):'https://'+x;return /^https:\/\/[^\s<>"']+\.[^\s<>"']+$/i.test(u)?u:null};
+const contSec=()=>`<h2 class=sec>Связь с клиентами</h2><div class=form style="padding-top:0"><p class=sub style="margin:0 4px">На главном экране клиента появятся кнопки «Написать в Telegram» и «Написать в Max». Кнопка видна, пока в поле есть ссылка: очистите поле, чтобы её убрать.</p>
+${fld('Telegram: имя пользователя или ссылка','ctg',S.cfg.ctg||'','placeholder="@имя_аккаунта" autocomplete=off autocapitalize=off spellcheck=false')}${fld('Max: ссылка на аккаунт','cmx',S.cfg.cmx||'','placeholder="https://max.ru/…" autocomplete=off autocapitalize=off spellcheck=false inputmode=url')}
+<div class=acts style="margin:14px 0 0"><button class="btn blk" onclick=saveCont()>Применить</button></div></div>`;
+async function saveCont(){const tg=lkNorm(v('#ctg'),'tg'),mx=lkNorm(v('#cmx'),'mx');
+if(tg===null)return uiAlert('Для Telegram вставьте имя пользователя (например, @name) или ссылку вида https://t.me/name.');if(mx===null)return uiAlert('Для Max вставьте ссылку на аккаунт: она начинается с https://');
+await put('cfg',{...S.cfg,id:'cfg',ctg:tg,cmx:mx});hap('success');toast(tg||mx?'Кнопки для клиентов сохранены':'Кнопки убраны')}
 async function setNtf(k,el){const on=el.checked;await put('cfg',{...S.cfg,id:'cfg',[k]:on});toast(on?'Включено':'Выключено')}
 async function saveSet(){const mk={w:{},m:(S.cfg.mk||C.MK).m};document.querySelectorAll('[data-n]').forEach(i=>mk.w[i.dataset.n]=+i.value);await put('cfg',{...S.cfg,id:'cfg',mk,exm:+v('#exm'),tax:+v('#tax'),acq:Math.max(0,+v('#acq')||0),pen:+v('#pen'),early:+v('#ea'),ed:+v('#ed'),dd:+v('#dd'),dmin:Math.min(100,Math.max(1,Math.round(+v('#dmin'))||50)),dbd:v('#dbd')===''?3:Math.max(0,Math.round(+v('#dbd'))),ds:[[+v('#da0'),+v('#db0')],[+v('#da1'),+v('#db1')]]});hap('success');toast('Настройки сохранены')}
 /* ---------- backup */
@@ -553,7 +613,7 @@ async function admDel(id){if(!await uiConfirm('Администратор исч
 /* ---------- log */
 const jp=x=>{try{return JSON.parse(x)}catch(e){return null}};
 const kindOf=(id,d)=>S.deals.some(x=>x.id==id)?'deal':S.bikes.some(x=>x.id==id)?'bike':S.clients.some(x=>x.id==id)?'client':S.admins.some(x=>x.id==id)?'admin':id=='cfg'?'cfg':d&&d.paid?'deal':d&&d.perms?'admin':d&&d.phone?'client':d&&d.name?'bike':'';
-function logWhat(a,id,o,n){o=jp(o);n=jp(n);const d=n||o||{};
+function logWhat(a,id,o,n){if(QLA[a])return logQR(a,id,o,n);o=jp(o);n=jp(n);const d=n||o||{};
 if(a=='restore')return'Восстановление из копии';if(a=='defer-client'){const x=S.deals.find(q=>q.id==id);return 'Клиент взял отсрочку: '+(x?nm(x.client):'')}
 if(a=='invite'||a=='unbind'||a=='login'){const c=id.startsWith('adm:')?(S.admins.find(x=>x.id==id.slice(4))||{}).name:nm(id);return {invite:'Ссылка для входа',unbind:'Сброс доступа',login:'Вход администратора'}[a]+': '+(c||'')}
 const k=kindOf(id,d),lab=k=='deal'?`${nm(d.client)}, ${bk(d.bike)}`:k=='cfg'?'настройки':d.name||'';
@@ -564,7 +624,7 @@ if(k=='deal'){const po=Object.keys(o.paid||{}).length,pn=Object.keys(n.paid||{})
 else if(k=='bike')w=n.wo&&!o.wo?'Списан':!n.wo&&o.wo?'Возвращён в парк':n.archived&&!o.archived?'В архив':(n.exp||[]).length>(o.exp||[]).length?'Добавлен расход':(n.exp||[]).length<(o.exp||[]).length?'Удалён расход':'Изменён';
 else if(k=='client')w=n.archived&&!o.archived?'В архив':'Изменён';else if(k=='cfg')w='Изменены настройки';else if(k=='admin')w=n.disabled!=o.disabled?(n.disabled?'Доступ отключён':'Доступ включён'):'Изменены права';
 return w+(k=='cfg'?'':': '+lab)}
-function logRow([ts,act,id,o,n]){const[a,p]=act.split('@'),who=a=='defer-client'?'Клиент':p||'Владелец',t=new Date(ts);
+function logRow([ts,act,id,o,n]){const[a,p]=act.split('@'),who=a=='defer-client'?'Клиент':p||'Вы',t=new Date(ts);
 return `<div class="row nl" style="cursor:default;min-height:64px"><span class=tx><b style="font-size:16px;white-space:normal">${esc(logWhat(a,id,o,n))}</b><span>${esc(who)}, ${ts.slice(8,10)}.${ts.slice(5,7)} ${ts.slice(11,16)}</span></span></div>`}
 const logS=()=>`${backBtn()}<div class=hd><div><small>Последние 250 действий</small><h1>Журнал</h1></div></div><div id=lg><div class=spin style="margin-top:16vh"></div></div>`;
 async function loadLog(){try{const L=await api('/api/log');$('#lg').innerHTML=L.length?`<div class=grp>${L.map(logRow).join('')}</div>`:empty('list','Записей пока нет')}catch(e){$('#lg').innerHTML=empty('alert','Не удалось загрузить журнал')}}
@@ -576,6 +636,90 @@ o.querySelector('[data-x]').onclick=()=>d();o.querySelector('[data-s]').onclick=
 o.querySelector('[data-c]').onclick=async()=>{try{await navigator.clipboard.writeText(link);toast('Ссылка скопирована')}catch(e){o.querySelector('#lk').select()}}},null)}catch(e){uiAlert('Не удалось создать ссылку. Проверьте BOT_USERNAME в настройках сервера.')}}
 async function unbind(cid){if(await uiConfirm('Клиенту понадобится новая ссылка.','Сбросить',{title:'Сбросить доступ клиента?'})){await api('/api/unbind',{client:cid});toast('Доступ сброшен')}}
 
+/* ---------- payment by QR (Tochka, SBP): the window with the code, the client's buttons, the owner's buttons, bills, unrecognised payments, settings */
+/* the picture of a QR: the bank's own image when there is one, otherwise drawn from the payload */
+function qrPng(q){if(q.img)return'data:image/png;base64,'+q.img;
+const M=QR.make(q.payload),n=M.length,z=Math.max(4,Math.floor(900/(n+8))),w=z*(n+8),c=document.createElement('canvas');c.width=c.height=w;const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,w,w);x.fillStyle='#000';
+M.forEach((r,j)=>r.forEach((d,i)=>{if(d)x.fillRect((i+4)*z,(j+4)*z,z,z)}));return c.toDataURL('image/png')}
+/* Telegram cannot save a picture straight to the gallery, so the server keeps the picture for 10 minutes and Telegram downloads it as a file */
+async function saveQR(q){try{const r=await api('/api/qrimg',{png:qrPng(q)}),url=location.origin+r.url;
+if(T.downloadFile&&T.isVersionAtLeast&&T.isVersionAtLeast('8.0'))T.downloadFile({url,file_name:'qr-oplata.png'});
+else if(T.openLink)T.openLink(url);else window.open(url,'_blank')}catch(e){uiAlert('Не удалось сохранить QR. Сделайте снимок экрана с кодом.')}}
+async function showQR(qid,title,client){let q;try{q=await api('/api/qr/'+qid)}catch(e){return uiAlert(e)}let timer;
+await sheet(`<h3>${client?'Оплата по QR':'QR на оплату'}</h3><p>${esc(title||'')}</p><div class="pv qrbox"><div class=big>${m(q.amt)}</div><div class=sm>${q.pen?`в том числе неустойка ${m(q.pen)} · `:''}действует до конца дня</div>
+<div style="margin:14px 0 0">${q.img?`<img class=qrimg src="data:image/png;base64,${esc(q.img)}" alt="QR-код">`:QR.svg(q.payload,220)}</div></div>
+<div id=qs class="note t-bl" style="margin:10px 0">${ic('clock','s')}<div>Ждём оплату…</div></div>
+<a class="btn blk" data-l href="${esc(q.payload)}" target=_blank rel=noopener>${ic('link','s')}Открыть в приложении банка</a>
+<button class="btn sec blk" data-v>${ic('down','s')}Сохранить QR в галерею</button>${client?'':`<button class="btn sec blk" data-s>${ic('send','s')}Отправить клиенту</button><button class="btn sec blk" data-c>${ic('copy','s')}Скопировать ссылку</button>`}
+<p class=qh><b>Если банк не открылся:</b> сохраните QR в галерею, затем в приложении банка выберите «Оплата по QR» и загрузите картинку из галереи. Или отсканируйте этот код с другого телефона.</p>
+<button class="btn sec blk" data-x>Закрыть</button>`,(o,d)=>{
+o.querySelector('[data-x]').onclick=()=>d();o.querySelector('[data-v]').onclick=()=>saveQR(q);
+const s=o.querySelector('[data-s]');if(s)s.onclick=()=>T.openTelegramLink('https://t.me/share/url?url='+encodeURIComponent(q.payload)+'&text='+encodeURIComponent('Оплата выкупа: '+m(q.amt)));
+const c=o.querySelector('[data-c]');if(c)c.onclick=async()=>{try{await navigator.clipboard.writeText(q.payload);toast('Ссылка скопирована')}catch(e){}};
+const st=(cls,ico,txt)=>{const e=o.querySelector('#qs');e.className='note '+cls;e.innerHTML=(ico?ic(ico,'s'):'')+'<div>'+txt+'</div>'};
+const stop=()=>{clearInterval(timer);o.querySelectorAll('[data-l],[data-v],[data-s],[data-c],.qh').forEach(e=>e.style.display='none');const i=o.querySelector('.qrimg,.qrbox svg');if(i)i.style.opacity='.25'};
+if(q.status!='open'||q.date<C.today()){st('t-n','','QR больше не действует: получите новый');stop();return}
+const poll=async()=>{try{const x=await api('/api/qr/'+qid);if(x.status=='paid'){hap('success');st('t-ok','check','<b>Оплачено</b>. Спасибо!');stop()}else if(x.status!='open'||x.date<C.today()){st('t-n','','QR больше не действует: получите новый');stop()}}catch(e){}};
+timer=setInterval(()=>{if(!document.body.contains(o)){clearInterval(timer);return}poll()},4000)},null);clearInterval(timer)}
+/* ---------- client */
+const CQT={now:'Оплата выкупа',debt:'Доплата долга',bill:'Выставленный платёж'};
+async function cQR(kind,deal,bill){let r;try{r=await api('/api/cqr',{deal,kind,bill})}catch(e){return uiAlert(e)}
+await showQR(r.qr,CQT[kind],1);try{ME=await api('/api/me');if(ME.role=='client')crender()}catch(e){}}
+const cQRb=(kind,d,bill,cls,txt)=>`<button class="btn blk ${cls||''}" onclick="cQR('${kind}','${d.id}'${bill?`,'${bill}'`:''})">${ic('receipt','s')}${txt}</button>`;
+/* ---------- owner: QR for a deal, bills */
+const openBills=id=>S.bills.filter(b=>b.deal==id&&b.status=='open');
+async function qrDeal(id){if(!S.tch.on)return uiAlert(isOwner()?'Чтобы выставлять QR, подключите Точку: Настройки → Оплата по QR. Пока оплату можно принять вручную.':'Оплата по QR пока не подключена. Пока оплату можно принять вручную.','QR не подключён');
+const d=S.deals.find(x=>x.id==id),I=info(d),L=[];if(I.x)L.push(['now',`К оплате сейчас, ${m(I.od.length?I.owe:I.x.amt)}`]);if(I.g)L.push(['debt',`Долг, ${m(I.g.total)}`]);if(!L.length)return;
+let k=L[0][0];if(L.length>1){const x=await uiPick('QR на что?',L.map(z=>z[1]));if(!x)return;k=L.find(z=>z[1]==x)[0]}
+let r;try{r=await api('/api/qr',{deal:id,kind:k})}catch(e){return uiAlert(e)}await showQR(r.qr,`${nm(d.client)}, ${bk(d.bike)}`);try{await load()}catch(e){}}
+async function billQR(id,bid){if(!S.tch.on)return qrDeal(id);const d=S.deals.find(x=>x.id==id);let r;try{r=await api('/api/qr',{deal:id,kind:'bill',bill:bid})}catch(e){return uiAlert(e)}
+await showQR(r.qr,`${nm(d.client)}, ${bk(d.bike)}`);try{await load()}catch(e){}}
+function billS(id){const d=S.deals.find(x=>x.id==id),I=info(d),x=I.x,t=C.today(),g=I.g;
+if(!x&&!g)return uiAlert('Сейчас нечего выставлять.');if(openBills(id).length)return uiAlert('У клиента уже есть выставленный платёж. Сначала отмените его или дождитесь оплаты.');
+const pen=x?C.penalty(x.amt,C.pdays(x.due,t,d),d.pen):0,full=x?x.amt+pen:0,part=x&&!g&&DM()<100&&minPart(x)<x.amt,ks=[];if(x)ks.push('За период');if(g)ks.push('В счёт долга');
+sheet(`<h3>Выставить платёж</h3><p>Клиент увидит его у себя в приложении${S.tch.on?' и сможет оплатить по QR: оплата отметится сама':'. Когда он заплатит, нажмите «Оплачено»'}.</p>${ks.length>1?seg('bk',ks,ks[0],'in'):''}
+<label class=fld><span>Сумма, ₽</span><input id=ba type=number inputmode=numeric></label><div class=pv><div class=sm id=bh></div></div><button class="btn blk lg" data-y>Выставить</button><button class="btn sec blk" data-n>Отмена</button>`,(o,dn)=>{
+const A=o.querySelector('#ba'),K=()=>{const b=o.querySelector('#bk .on');return b?(b.textContent=='В счёт долга'?'debt':'period'):x?'period':'debt'};
+const upd=reset=>{if(K()=='debt'){if(reset)A.value=g.total;const b=Math.round(+A.value)||0;
+o.querySelector('#bh').textContent=`Долг сейчас ${m(g.total)}${g.pen?`, в том числе неустойка ${m(g.pen)}`:''}${b>g.pen&&b<g.total?` · останется долгом ${m(g.total-b)}`:''}`;return}
+if(reset)A.value=full;const b=Math.round(+A.value)||0;
+o.querySelector('#bh').textContent=`Полный платёж за период ${x.k}: ${m(full)}${pen?`, в том числе неустойка ${m(pen)}`:''}${part?` · не меньше ${m(minPart(x)+pen)}`:''}${b&&b<full?` · остаток ${m(full-b)} станет долгом на ${DB()} ${dayWord(DB())} без неустойки`:''}`};
+o.querySelectorAll('#bk button').forEach(b=>b.addEventListener('click',()=>upd(true)));upd(true);A.oninput=()=>upd(false);o.querySelector('[data-n]').onclick=()=>dn();
+o.querySelector('[data-y]').onclick=async()=>{try{await api('/api/bill',{deal:id,kind:K(),amt:+A.value});dn();await load();hap('success');toast('Платёж выставлен')}catch(e){uiAlert(e)}}},null)}
+async function billPaid(id,bid){const x=await uiPick('Как клиент оплатил?',['Наличные','СБП','Перевод']);if(!x)return;
+try{await api('/api/bill',{do:'paid',id:bid,method:{'Наличные':'наличные','СБП':'СБП','Перевод':'перевод'}[x]});await load();hap('success');toast('Оплата принята')}catch(e){uiAlert(e);try{await load()}catch(z){}}}
+async function billVoid(id,bid){if(!await uiConfirm('Клиент больше не увидит этот платёж.','Отменить платёж',{danger:true,title:'Отменить выставленный платёж?'}))return;
+try{await api('/api/bill',{do:'void',id:bid});await load();toast('Платёж отменён')}catch(e){uiAlert(e)}}
+const billCard=(d,b)=>`<div class="card bill"><div class=mu>Выставлен платёж ${b.kind=='debt'?'в счёт долга':'за период'}</div><div class=mid>${m(b.amt)}</div><div class=mu>Клиент видит его у себя в приложении${S.tch.on?' и может оплатить по QR':''}</div>
+${can('pay')?`<div class=acts>${S.tch.on?`<button class="btn sm" onclick="billQR('${d.id}','${b.id}')">${ic('receipt','s')}QR</button>`:''}<button class="btn sm go" onclick="billPaid('${d.id}','${b.id}')">Оплачено</button><button class="btn sm dng" onclick="billVoid('${d.id}','${b.id}')">Отменить</button></div>`:''}</div>`;
+/* ---------- owner: payments by QR that could not be credited */
+const unkOpen=()=>can('pay')?S.unks.filter(u=>u.status=='open').sort((a,b)=>a.ts<b.ts?1:-1):[];
+const unkBlock=()=>{const U=unkOpen();if(!U.length)return'';
+return `<h2 class="sec t-er"><span class=bdg aria-label="Не распознано: ${U.length}">${U.length}</span>Не распознано</h2><div class=grp>${U.map(u=>{const d=S.deals.find(x=>x.id==u.deal);return `<button class=row onclick="unkS('${u.id}')"><span class="gl t-er">${ic('alert')}</span><span class=tx><b>${m(u.amt)}</b><span>${esc(d?nm(d.client):'Клиент не найден')}, ${fmt(u.ts.slice(0,10))}</span></span>${ic('right','s')}</button>`}).join('')}</div><p class=sub>Деньги пришли по QR, но приложение не смогло сразу засчитать их в выкуп. Откройте платёж и выберите, куда его засчитать.</p>`};
+function unkS(id){const u=S.unks.find(x=>x.id==id);if(!u||u.status!='open')return;const d=S.deals.find(x=>x.id==u.deal),I=d&&d.status=='active'?info(d):null;
+sheet(`<h3>Платёж ${m(u.amt)}</h3><p>${esc(u.why||'')}<br>Клиент: ${esc(d?nm(d.client):'не найден')}, ${fmt(u.ts.slice(0,10))}.</p>${I&&I.x?`<button class="btn blk" data-p>Засчитать как оплату периода</button>`:''}${I&&I.g?`<button class="btn blk" data-d>Засчитать в долг</button>`:''}
+<label class=fld><span>Или отметить как разобранный (например, вернули деньги)</span><input id=un placeholder="Комментарий"></label><button class="btn sec blk" data-o>Разобрано</button><button class="btn sec blk" data-n>Отмена</button>`,(o,dn)=>{
+const go=async b=>{try{await api('/api/unk',{id,...b});dn();await load();hap('success');toast(b.do=='done'?'Отмечено':'Засчитано')}catch(e){uiAlert(e)}};
+o.querySelector('[data-n]').onclick=()=>dn();const p=o.querySelector('[data-p]'),g=o.querySelector('[data-d]');if(p)p.onclick=()=>go({do:'apply',kind:'period'});if(g)g.onclick=()=>go({do:'apply',kind:'debt'});
+o.querySelector('[data-o]').onclick=()=>go({do:'done',note:o.querySelector('#un').value})},null)}
+/* ---------- owner: connecting Tochka (settings) */
+const tchSec=()=>{const t=S.tch||{},hook=t.hook?location.origin+'/hook/tochka/'+t.hook:'';
+return `<h2 class=sec>Оплата по QR (Точка)</h2><div class=form style="padding-top:0"><div class="note t-${t.on?'ok':'wa'}" style="margin:0 0 4px">${ic(t.on?'check':'alert')}<div>${t.on?'Подключено: клиенты и вы выставляете QR, оплаты отмечаются сами.':'Не подключено. Пока оплату принимаете вручную.'}</div></div>
+${fld('ID торговой точки (merchantId)','tm',t.merchant||'','autocomplete=off autocapitalize=off spellcheck=false')}${fld('ID счёта (accountId): номер счёта и БИК через косую черту','ta',t.account||'','autocomplete=off placeholder="40802810…/044525104" spellcheck=false')}
+<label class=fld><span>JWT-токен из интернет-банка Точки</span><input id=tj type=password autocomplete=off placeholder="${t.jwt?'сохранён: оставьте пустым, чтобы не менять':'вставьте токен'}"></label>
+<div class=acts style="margin:14px 0 0"><button class="btn blk" onclick=saveTch(this)>${t.merchant?'Обновить подключение':'Подключить Точку'}</button>${t.merchant?`<button class="btn dng" onclick=clearTch()>Отключить</button>`:''}</div>
+${hook?`<p class=sub style="margin:12px 4px 0">Адрес для вебхука в Точке (по желанию, тогда оплата отметится ещё быстрее):</p><div class=hk>${esc(hook)}</div><div class=acts style="margin:8px 0 0"><button class="btn sec" onclick="copyHook()">${ic('copy','s')}Скопировать адрес</button></div>`:''}
+<p class=sub style="margin:12px 4px 0">Токен хранится только на сервере: его не видят ни клиенты, ни администраторы, и в файлы копий он не попадает.</p></div>`};
+async function saveTch(el){const mr=v('#tm').trim(),ac=v('#ta').trim(),jw=v('#tj').trim();if(!mr||!ac)return uiAlert('Заполните ID торговой точки и ID счёта.');if(!S.tch.jwt&&!jw)return uiAlert('Вставьте JWT-токен из интернет-банка Точки.');
+el.disabled=true;try{await api('/api/tochka',{merchant:mr,account:ac,jwt:jw});await load();hap('success');toast('Подключение сохранено')}catch(e){uiAlert(e)}el.disabled=false}
+async function clearTch(){if(!await uiConfirm('Клиенты и вы больше не сможете выставлять QR. Уже выставленные QR перестанут отмечаться.','Отключить',{danger:true,title:'Отключить оплату по QR?'}))return;
+try{await api('/api/tochka',{clear:1});await load();toast('Оплата по QR отключена')}catch(e){uiAlert(e)}}
+async function copyHook(){try{await navigator.clipboard.writeText(location.origin+'/hook/tochka/'+S.tch.hook);toast('Адрес скопирован')}catch(e){uiAlert(location.origin+'/hook/tochka/'+S.tch.hook)}}
+/* ---------- log labels of the QR actions */
+const QLA={'pay-qr':'Оплата по QR','qr-paid':'QR оплачен','qr':'Создан QR','bill':'Выставлен платёж','bill-paid':'Платёж принят','bill-void':'Платёж отменён','unk':'Платёж не распознан','unk-apply':'Платёж засчитан','unk-done':'Платёж разобран','tochka':'Настройки Точки'};
+function logQR(a,id,o,n){const d=jp(n)||jp(o)||{},dl=S.deals.find(x=>x.id==(d.client?id:d.deal));
+return QLA[a]+(a=='tochka'||!dl?'':': '+nm(dl.client)+', '+bk(dl.bike)+(d.client||!d.amt?'':' · '+m(d.amt)))}
+
 /* ---------- screens for the owner and administrators */
 const SCR={home,base,add,fClient,fBike,fDeal,deal,payS,debtS,calcS,rep,set,expS,woS,swapS,bikeView,fAdmin,logS};
 /* ---------- client */
@@ -584,31 +728,37 @@ const cgo=s=>{CV.push(s);navDir='fw';crender()},cback=()=>{if(CV.length>1){CV.po
 const cBack=()=>`<button class=back onclick=cback()>${ic('left')}Назад</button>`;
 /* short explanations for the client: what a function does, shown by the «?» next to it */
 const CI={sch:['График платежей',['Здесь все платежи по выкупу по порядку: за какой период, до какого числа и на какую сумму.','Зелёная галочка значит, что период оплачен. Красным отмечены просроченные периоды: к ним добавляется неустойка, она указана в строке.','Жёлтый значок значит, что внесена только часть платежа: в строке написано, сколько внесено из какой суммы, а остаток стал долгом, и указана дата, до которой его нужно внести.']],
-hist:['История оплат',['Здесь все платежи, которые приняты по вашему выкупу: дата, сумма и способ оплаты.','Если платёж был с неустойкой, она указана отдельно. Оплаты долга и досрочные платежи тоже есть в списке.','Не нашли свой платёж или видите лишний? Сообщите владельцу.']],
+hist:['История оплат',['Здесь все платежи, которые приняты по вашему выкупу: дата, сумма и способ оплаты.','Если платёж был с неустойкой, она указана отдельно. Оплаты долга и досрочные платежи тоже есть в списке.','Не нашли свой платёж или видите лишний? Сообщите нам.']],
+qr:['Оплата по QR',['Нажмите «Оплатить по QR»: откроется QR-код на точную сумму. Откройте его в приложении банка на этом телефоне или отсканируйте с другого.','Сумма уже включает неустойку, если есть просрочка. QR действует до конца дня: завтра сумма может измениться, тогда нужен новый код.','Оплата отметится в приложении сама, обычно в течение минуты. Ничего подтверждать не нужно.','Если банк не открылся, сохраните QR в галерею и загрузите картинку в приложении банка в разделе «Оплата по QR».']],
+bill:['Выставленный платёж',['Вам выставили платёж на конкретную сумму. Его можно оплатить по QR, он отметится сам.','Если сумма меньше полного платежа за период, остаток станет долгом: срок и неустойка будут указаны в карточке долга.']],
 def:()=>['Отсрочка',[`Отсрочка сдвигает ближайший платёж и все следующие на ${ME.dd} ${dayWord(ME.dd)} вперёд. В эти дни неустойка не начисляется.`,'Взять её можно один раз за весь срок выкупа. Если уже есть просрочка или просроченный долг, отсрочка недоступна.']],
 debt:d=>{const r=String(d.pen==null?0.9:d.pen).replace('.',',');return['Остаток и срок',['Вы внесли часть платежа, а оставшаяся часть стала долгом. До указанной даты его можно внести без неустойки.',`После этой даты за каждый день просрочки начисляется неустойка: ${r}% в день от остатка. Сумма в карточке указана на сегодня, завтра она будет больше.`,'Пока долг не закрыт, следующий платёж можно вносить только целиком, а не частями. Долг можно закрыть сразу или частями: сначала платится неустойка, потом остаток.']]}};
 function cInfo(k){const d=ME.deals.find(x=>x.status=='active')||ME.deals[0],c=CI[k],[t,P]=typeof c=='function'?c(d):c;
 sheet(`<h3>${esc(t)}</h3>${P.map(x=>`<p style="margin:10px 0 0;font-size:15px;line-height:1.4">${esc(x)}</p>`).join('')}<button class="btn blk" data-y>Понятно</button>`,(o,x)=>o.querySelector('[data-y]').onclick=()=>x())}
 const qb=k=>`<button type=button class=qi aria-label="Как это работает" onclick="cInfo('${k}')">?</button>`;
 function defAsk(id){uiConfirm(`Ближайший платёж и все следующие сдвинутся на ${ME.dd} ${dayWord(ME.dd)}, неустойка в эти дни начисляться не будет. Отсрочку можно взять только один раз за весь срок выкупа.`,'Взять отсрочку',{title:`Отсрочка на ${ME.dd} ${dayWord(ME.dd)}`}).then(async y=>{if(!y)return;try{await api('/api/defer',{id});ME=await api('/api/me');hap('success');toast('Отсрочка оформлена');crender()}catch(e){uiAlert('Отсрочка недоступна: возможно, она уже использована или есть просрочка.')}})}
-async function claim(tok){try{await api('/api/claim',{tok,phone:v('#ph')});location.reload()}catch(e){uiAlert('Проверьте номер телефона и ссылку. Номер должен совпадать с тем, который вы сообщили владельцу.','Не удалось войти')}}
+async function claim(tok){try{await api('/api/claim',{tok,phone:v('#ph')});location.reload()}catch(e){uiAlert('Проверьте номер телефона и ссылку. Номер должен совпадать с тем, который вы называли при оформлении выкупа.','Не удалось войти')}}
 function clientUI(){$('#nav').style.display='none';
-if(ME.role=='new'){const tok=startParam();$('#app').innerHTML=tok?`<div class=center><div style="display:flex;justify-content:center">${wheel(Array.from({length:26},(_,i)=>i<17?'p':i==17?'x':'u'),{size:132,sw:12,round:true,gap:3,an:true})}</div><h1>Вход</h1><p>Введите номер телефона, который вы сообщили владельцу.</p><div style="text-align:left"><input id=ph type=tel inputmode=tel placeholder="+7 900 000-00-00" autocomplete=tel></div><div class=acts style="margin:16px 0 0"><button class="btn blk lg" onclick="claim('${esc(tok)}')">Войти</button></div></div>`:`<div class=center>${ic('link','l')}<h1>Нужна ссылка</h1><p>Откройте ссылку для входа, которую прислал владелец.</p></div>`;return}
+if(ME.role=='new'){const tok=startParam();$('#app').innerHTML=tok?`<div class=center><div style="display:flex;justify-content:center">${wheel(Array.from({length:26},(_,i)=>i<17?'p':i==17?'x':'u'),{size:132,sw:12,round:true,gap:3,an:true})}</div><h1>Вход</h1><p>Введите номер телефона, который вы указали при оформлении выкупа.</p><div style="text-align:left"><input id=ph type=tel inputmode=tel placeholder="+7 900 000-00-00" autocomplete=tel></div><div class=acts style="margin:16px 0 0"><button class="btn blk lg" onclick="claim('${esc(tok)}')">Войти</button></div></div>`:`<div class=center>${ic('link','l')}<h1>Нужна ссылка</h1><p>Откройте ссылку для входа, которую вам прислали.</p></div>`;return}
 lastLoad=Date.now();crender()}
 const startParam=()=>{const u=T.initDataUnsafe||{};if(u.start_param)return u.start_param;const x=(location.search+'&'+location.hash.replace(/^#/,'')).match(/tgWebAppStartParam=([^&]+)/);return x?decodeURIComponent(x[1]):''};
-function crender(){const d=ME.deals.find(x=>x.status=='active')||ME.deals[0];if(!d){$('#app').innerHTML=`<div class=center>${ic('bike','l')}<h1>Выкупов пока нет</h1><p>Когда владелец оформит выкуп, он появится здесь.</p></div>`;return}
+function crender(){const d=ME.deals.find(x=>x.status=='active')||ME.deals[0];if(!d){$('#app').innerHTML=`<div class=center>${ic('bike','l')}<h1>Выкупов пока нет</h1><p>Когда ваш выкуп оформят, он появится здесь.</p>${contact()}</div>`;return}
 const el=$('#app');el.innerHTML=({main:cmain,sch:csch,hist:chist})[CV[CV.length-1]](d);el.className='';if(navDir){void el.offsetWidth;el.className=navDir}navDir='';scrollTo(0,0);chrome()}
-const DEBT=g=>`<div class="cn hq${g.over?' over':''}">${qb('debt')}<div class=tag>${ic('alert','s')}${g.over?`Долг просрочен на ${g.late} ${dayWord(g.late)}`:`Долг по периоду ${g.k}`}</div><div class=big>${m(g.total)}</div><div style="font-size:18px;font-weight:650;margin-top:2px">${g.pen?`${m(g.amt)} + неустойка ${m(g.pen)}`:g.over?'неустойка сейчас не начисляется':`внести до ${fmt(g.due)}`}</div><div class=mu style="margin-top:4px">${g.over?`Срок без неустойки был до ${fmt(g.due)}`:'До этой даты неустойка не начисляется'}</div></div>`;
+const DEBT=(g,d)=>`<div class="cn hq${g.over?' over':''}">${qb('debt')}<div class=tag>${ic('alert','s')}${g.over?`Долг просрочен на ${g.late} ${dayWord(g.late)}`:`Долг по периоду ${g.k}`}</div><div class=big>${m(g.total)}</div><div style="font-size:18px;font-weight:650;margin-top:2px">${g.pen?`${m(g.amt)} + неустойка ${m(g.pen)}`:g.over?'неустойка сейчас не начисляется':`внести до ${fmt(g.due)}`}</div><div class=mu style="margin-top:4px">${g.over?`Срок без неустойки был до ${fmt(g.due)}`:'До этой даты неустойка не начисляется'}</div>${ME.qr?`<div class=cq>${cQRb('debt',d,0,'',`Доплатить по QR · ${m(g.total)}`)}</div>`:''}</div>`;
+const contact=()=>{const c=ME.ct||{};if(!c.tg&&!c.mx)return'';return `<div class=wr>${c.tg?`<button class="btn sec blk" onclick="cWrite('tg')">${ic('chat','s')}Написать в Telegram</button>`:''}${c.mx?`<button class="btn sec blk" onclick="cWrite('mx')">${ic('chat','s')}Написать в Max</button>`:''}</div>`};
+function cWrite(k){const u=(ME.ct||{})[k];if(!u)return;hap();if(/^https:\/\/(t|telegram)\.me\//i.test(u)&&T.openTelegramLink)T.openTelegramLink(u);else if(T.openLink)T.openLink(u);else window.open(u,'_blank')}
+const bills=d=>ME.deals&&d.status=='active'?(ME.bills||[]).filter(b=>b.deal==d.id).map(b=>`<div class="cn bl">${qb('bill')}<div class=tag>${ic('receipt','s')}Вам выставлен платёж</div><div class=big>${m(b.amt)}</div><div class=mu style="margin-top:4px">${b.kind=='debt'?'В счёт долга':'За период'}${ME.qr?'':'. Оплатите, как договорились'}</div>${ME.qr?`<div class=cq>${cQRb('bill',d,b.id,'',`Оплатить по QR · ${m(b.amt)}`)}</div>`:''}</div>`).join(''):'';
 function cmain(d){const I=info(d),t=C.today(),x=I.x,k=I.sc.length-I.un.length,on=d.status=='active';let tn='ok',tx='Период оплачен, всё хорошо',icn='check',nb=0;
 if(!on){tn='n';tx=d.status=='archived'?'Выкуп завершён. Поздравляем!':'Выкуп закрыт';icn='flag'}
 else if(I.done)tx='Всё оплачено. Поздравляем!';
 else{const n=x?C.diff(x.due,t):1,g=I.g;if(n<0){tn='dr';tx=`Просрочка ${-n} ${dayWord(-n)}${I.pen?`. Неустойка ${m(I.pen)}`:''}`;icn='alert'}else if(g){nb=1}else if(n==0){tn='wd';tx='Сегодня день оплаты';icn='alert'}else if(n<=2){tn='wa';tx=n==1?'Завтра оплата':'Оплата через 2 дня';icn='clock'}}
 const dn=x?C.diff(x.due,t):9,can2=on&&!I.done&&!(d.defer||[]).some(z=>z.by=='client')&&!I.od.length&&!(I.g&&I.g.over);
 return `<div class="hd"><div><small>${esc(d.bike||'Электровелосипед')}</small><h1>Мой выкуп</h1></div></div>${nb?'':`<div class="cb t-${tn}"><span class=gl>${ic(icn)}</span><span>${esc(tx)}</span></div>`}
-${I.g&&on?DEBT(I.g):''}
+${bills(d)}${I.g&&on?DEBT(I.g,d):''}
 <div class=cw>${whw(states(d),{size:236,sw:20,round:true,gap:4,an:true},`<span class=k>${k}</span><small>из ${I.sc.length} платежей</small>`)}</div>
 ${x&&on?(I.od.length?`<button class="cn owe" onclick="oweSheet('${d.id}')"><div class=mu>К оплате сейчас</div><div class=big>${m(I.owe)}</div><div style="font-size:18px;font-weight:650;margin-top:2px">${oweSub(I)}</div><div class=hint>Что входит в сумму${ic('right','s')}</div></button>`:`<div class="cn nx ${dn>=3?'g':dn==2?'y1':dn==1?'y2':'y3'}"><div class=mu>Следующий платёж</div><div class=big>${m(x.amt)}</div><div style="font-size:18px;font-weight:650;margin-top:2px">до ${fmt(x.due)}</div>${nb&&dn<=2?`<div class=nxs>${dn==0?'Сегодня день оплаты':dn==1?'Завтра оплата':'Оплата через 2 дня'}</div>`:''}<div class=mu style="margin-top:4px">Период ${x.k} из ${I.sc.length}: ${per(d,x)}</div></div>`):''}
-<div class=cp><div class=tw><button class=tl onclick="cgo('sch')"><span class=gl>${ic('cal')}</span><span>График платежей</span>${ic('right')}</button>${qb('sch')}</div><div class=tw><button class=tl onclick="cgo('hist')"><span class=gl>${ic('clock')}</span><span>История оплат</span>${ic('right')}</button>${qb('hist')}</div>${can2?`<div class=tw><button class=tl onclick="defAsk('${d.id}')"><span class=gl>${ic('bolt')}</span><span>Отсрочка на ${ME.dd} ${dayWord(ME.dd)}</span>${ic('right')}</button>${qb('def')}</div>`:''}</div>`}
+${x&&on&&ME.qr?`<div class=cq2>${cQRb('now',d,0,'lg',`Оплатить по QR · ${m(I.od.length?I.owe:x.amt)}`)}${qb('qr')}</div>`:''}
+<div class=cp><div class=tw><button class=tl onclick="cgo('sch')"><span class=gl>${ic('cal')}</span><span>График платежей</span>${ic('right')}</button>${qb('sch')}</div><div class=tw><button class=tl onclick="cgo('hist')"><span class=gl>${ic('clock')}</span><span>История оплат</span>${ic('right')}</button>${qb('hist')}</div>${can2?`<div class=tw><button class=tl onclick="defAsk('${d.id}')"><span class=gl>${ic('bolt')}</span><span>Отсрочка на ${ME.dd} ${dayWord(ME.dd)}</span>${ic('right')}</button>${qb('def')}</div>`:''}</div>${contact()}`}
 const csch=d=>{const I=info(d),O=Object.fromEntries(I.ods.map(o=>[o.k,o]));return `${cBack()}<div class=hd><h1>График платежей</h1></div><div class=grp>`+I.sc.map(x=>{const p=d.paid[x.k],o=O[x.k],gd=p&&p.part&&d.debt&&d.debt.k==x.k?d.debt:null;return `<div class="per ${gd?(gd.due<C.today()?'er':'wa'):p?'ok':o?'er':''}"><span class=dot>${gd?ic('clock','s'):p?ic('check','s'):x.k}</span><span class=tx><b>${per(d,x)}</b><span>${p?(p.part?'внесено '+m(p.amt)+' из '+m(x.amt)+', ':'оплачен ')+fmt(p.date)+(p.pen?`, неустойка ${m(p.pen)}`:'')+(gd?`</span><span class=dw>Долг ${m(gd.amt)}, внести до ${fmt(gd.due)}`:''):'до '+fmt(x.due)+(o&&o.pen?`, неустойка ${m(o.pen)}`:'')}</span></span><b>${m(p?p.amt+(p.pen||0):x.amt+(o?o.pen:0))}</b></div>`}).join('')+'</div>'};
 const chist=d=>{const L=Object.entries(d.paid).map(([k,p])=>({date:p.date,a:m(p.amt+(p.pen||0)),s:`период ${k}${p.part?' (часть)':''}, ${esc(p.method)}${p.pen?`, неустойка ${m(p.pen)}`:''}`})).concat((d.dpays||[]).map(z=>({date:z.date,a:m(z.amt+(z.pen||0)),s:`долг по периоду ${z.k}, ${esc(z.method)}${z.pen?`, неустойка ${m(z.pen)}`:''}`}))).concat((d.early||[]).map(e=>({date:e.date,a:m(e.paid||e.amt),s:`досрочный платёж, ${esc(e.method)}`}))).sort((a,b)=>a.date<b.date?1:-1);
 return `${cBack()}<div class=hd><h1>История оплат</h1></div>`+(L.length?`<div class=grp>${L.map(e=>`<div class="row nl" style="cursor:default"><span class=tx><b>${e.a}</b><span>${fmt(e.date)}, ${e.s}</span></span></div>`).join('')}</div>`:empty('clock','Платежей пока нет'))};
@@ -618,9 +768,9 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden||!ME)return
 if(ME.role=='owner')refreshMe();
 if((ME.role=='owner'||ME.role=='admin')&&Date.now()-lastLoad>30000)soft();
 if(ME.role=='client'&&Date.now()-lastLoad>30000)api('/api/me').then(r=>{if(r.role=='client'){ME=r;lastLoad=Date.now();if(CV.length==1)crender()}}).catch(()=>{})});
-async function boot(){try{ME=await api('/api/me')}catch(e){return center('lock','Не удалось войти','Откройте приложение из Telegram по ссылке от владельца.\n('+e+')')}
+async function boot(){try{ME=await api('/api/me')}catch(e){return center('lock','Не удалось войти','Откройте приложение из Telegram по ссылке для входа, которую вам прислали.\n('+e+')')}
 if(ME.role=='owner'||ME.role=='admin'){try{await load(true)}catch(e){return center('lock','Нет связи','Не удалось загрузить данные. Закройте приложение и откройте снова.\n('+e+')')}$('#nav').style.display='';render()}
-else if(ME.role=='off')center('lock','Доступ отключён','Обратитесь к владельцу.');
+else if(ME.role=='off')center('lock','Доступ отключён','Свяжитесь с нами.');
 else clientUI()}
 boot();
 
