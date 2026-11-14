@@ -1,14 +1,17 @@
-import os,re,json,hmac,hashlib,sqlite3,threading,time,secrets,urllib.request,urllib.error,urllib.parse,datetime as dt
+import os,re,json,hmac,hashlib,sqlite3,threading,time,secrets,math,copy,urllib.request,urllib.error,urllib.parse,datetime as dt
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 TOK=os.environ['BOT_TOKEN'];OWNER=int(os.environ['OWNER_ID'])
 MSK=dt.timezone(dt.timedelta(hours=3));L=threading.Lock()
+TQB=os.environ.get('TOCHKA_BASE','https://enter.tochka.com/uapi');MOCK=os.environ.get('TOCHKA_MOCK')=='1'
+IMG={}
 DATA=os.environ.get('DATA_DIR','/data');BK=DATA+'/backups';os.makedirs(BK,exist_ok=True);TGB=os.environ.get('TG_BASE','https://api.telegram.org')
 db=sqlite3.connect(DATA+'/app.db',check_same_thread=False)
 db.executescript("create table if not exists docs(id text primary key,kind text,data text);create table if not exists log(ts text,act text,id text,old text,new text);create table if not exists inv(tok text primary key,client text,exp real);create table if not exists bind(tg integer primary key,client text);create table if not exists ntf(k text primary key)")
 FAIL={};TRY={};BOT=[os.environ.get('BOT_USERNAME','').lstrip('@') or None]
 HD={'X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Strict-Transport-Security':'max-age=31536000',
 'Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self' https://*.telegram.org"}
-KINDS=('client','bike','deal','cfg','admin')
+KINDS=('client','bike','deal','cfg','admin','qr','unk','bill','tch')
+SRV=('qr','unk','bill','tch')  # written only by the server's own actions, never through /api/put
 PERMS=('pay','early','pen','clients','deals','bikes','reports')
 FINP={'deals','bikes','reports'}  # rights that let an administrator see prices, purchase costs and profit
 HID={'deal':('total','tax','acq','cost','disc','mk','extras','down','refund'),'bike':('cost','exp','wo')}
@@ -52,15 +55,17 @@ def row(i):
 def doc(i):
     r=row(i);return r and r[1]
 def save(i,k,d):db.execute('insert or replace into docs values(?,?,?)',(i,k,json.dumps(d)))
+def D(s):return dt.date.fromisoformat(s)
 def digits(p):return re.sub(r'\D','',p or '')[-10:]
 def first_unpaid(d):
     for k in range(1,d['n']+1):
         if str(k) not in d['paid']:return k
 def due(d,k):return dt.date.fromisoformat(d['start'])+dt.timedelta(days=0 if k==1 else (30 if d['type']=='m' else 7)*(k-1)-1+d.get('shift',0))
 def sched(d):
-    """Payment schedule as the app shows it: early payments shorten it from the end (mirrors static/calc.js)."""
-    n=d['n'];paid=d.get('paid') or {};r=[{'k':k,'amt':d['last'] if k==n else d['pay']} for k in range(1,n+1)]
-    e=sum(x.get('paid') or x.get('amt') or 0 for x in d.get('early') or [])
+    """Payment schedule exactly as the app computes it (static/calc.js): due dates, and early payments shorten it from the end."""
+    n=d['n'];paid=d.get('paid') or {};P=30 if d['type']=='m' else 7
+    r=[{'k':k,'due':d['start'] if k==1 else (D(d['start'])+dt.timedelta(days=P*(k-1)-1+(0 if str(k) in paid else (d.get('shift') or 0)))).isoformat(),'amt':d['last'] if k==n else d['pay']} for k in range(1,n+1)]
+    e=sum((x.get('amt') or 0) for x in d.get('early') or [])
     for x in reversed(r):
         if e<=0 or str(x['k']) in paid:break
         c=min(e,x['amt']);x['amt']-=c;e-=c
@@ -99,13 +104,19 @@ def notify_deal(old,new,ro,adm):
 def defer_msg(d):
     x=nxt(d)
     if x:tell(d.get('client'),f"Отсрочка оформлена. Ближайший платёж {rub(x['amt'])} теперь до {dm(due(d,x['k']))}.")
+def safe_link(v):
+    """A link to the owner's Telegram / Max account for the client screen: only plain https links are passed on."""
+    v=str(v or '').strip()
+    return v if re.fullmatch(r'https://[^\s<>"\'\\]{3,300}',v) else ''
 def mine(cid):
     c=doc(cid) or {};out=[]
     for i,d in db.execute("select id,data from docs where kind='deal'").fetchall():
         d=json.loads(d)
         if d['client']==cid:
             out.append({k:d.get(k) for k in('n','start','pay','last','paid','early','shift','defer','pen','status','contract','type','debt','dpays','pw','np')}|{'id':i,'bike':(doc(d['bike']) or {}).get('name','')})
-    return {'role':'client','name':c.get('name',''),'deals':out,'dd':(doc('cfg') or {}).get('dd',2)}
+    ids={o['id'] for o in out};bills=[{'id':i,'deal':z['deal'],'amt':z['amt'],'kind':z['kind'],'ts':z.get('ts')} for i,z in docs_of('bill') if z.get('status')=='open' and z.get('deal') in ids]
+    cf=doc('cfg') or {}
+    return {'role':'client','name':c.get('name',''),'deals':out,'dd':cf.get('dd',2),'qr':bool(tq()),'bills':bills,'ct':{'tg':safe_link(cf.get('ctg')),'mx':safe_link(cf.get('cmx'))}}
 def adm_of(u):
     """The administrator whose Telegram ID is u: (id, data) or None."""
     for i,d in db.execute("select id,data from docs where kind='admin'").fetchall():
@@ -153,7 +164,7 @@ def amerge(P,k,old,new):
     return m
 def dump():
     with L:
-        return json.dumps({'v':1,'ts':dt.datetime.now(MSK).isoformat(),'docs':[{'id':i,'kind':k,'data':json.loads(x)} for i,k,x in db.execute('select id,kind,data from docs')],
+        return json.dumps({'v':1,'ts':dt.datetime.now(MSK).isoformat(),'docs':[{'id':i,'kind':k,'data':json.loads(x)} for i,k,x in db.execute("select id,kind,data from docs where kind!='tch'")],
         'bind':[[a,c] for a,c in db.execute('select tg,client from bind')],'log':[list(r) for r in db.execute('select ts,act,id,old,new from log')]},ensure_ascii=False).encode()
 DL={};TTL=int(os.environ.get('DL_TTL','120'));BS=DATA+'/last_download.json'
 def bget():
@@ -174,6 +185,7 @@ def restore(b):
         seen=set();rows=[]
         for x in docs:
             i,k,d=x['id'],x['kind'],x['data']
+            if k=='tch':continue
             if not isinstance(i,str) or not ID.fullmatch(i) or k not in KINDS or not isinstance(d,dict) or i in seen:return 400,'Файл повреждён: неверная запись.'
             seen.add(i);rows.append((i,k,json.dumps(d)))
         bi=[(int(a),str(c)) for a,c in bind if ID.fullmatch(str(c))]
@@ -182,9 +194,9 @@ def restore(b):
     with L:
         snap('pre-restore')
         try:
-            empty=not db.execute('select 1 from log limit 1').fetchone()
+            empty=not db.execute('select 1 from log limit 1').fetchone();keep=db.execute("select id,kind,data from docs where kind='tch'").fetchall()
             db.execute('delete from docs');db.execute('delete from bind');db.execute('delete from inv')
-            db.executemany('insert into docs values(?,?,?)',rows);db.executemany('insert or replace into bind values(?,?)',bi)
+            db.executemany('insert into docs values(?,?,?)',rows+[tuple(z) for z in keep]);db.executemany('insert or replace into bind values(?,?)',bi)
             if empty:db.executemany('insert into log values(?,?,?,?,?)',lg)
             db.execute('insert into log values(?,?,?,?,?)',(dt.datetime.now(MSK).isoformat(),'restore','',None,json.dumps({'docs':len(rows),'from':b.get('ts')})));db.commit()
         except Exception as e:
@@ -196,6 +208,277 @@ def clean_admin(i,old,new):
     if not nm or not digits(ph):return None
     pl=new.get('perms');pl=pl if isinstance(pl,list) else []
     return {'id':i,'name':nm,'phone':ph,'perms':[q for q in PERMS if q in pl],'tg':(old or {}).get('tg'),'disabled':bool(new.get('disabled')),'created':new.get('created'),'_v':new.get('_v',0)}
+# ---------- calculation on the server: mirrors static/calc.js and info() of the app (tests/calc_parity.py compares them) ----------
+class Bad(Exception):pass
+def add(s,n):return (D(s)+dt.timedelta(days=n)).isoformat()
+def diff(a,b):return (D(a)-D(b)).days
+def tod():return dt.datetime.now(MSK).date().isoformat()
+def nid():return secrets.token_hex(6)
+def cfgv(k,dflt):
+    v=(doc('cfg') or {}).get(k);return dflt if v is None else v
+def penalty(a,days,r):return int(math.floor(a*(0.9 if r is None else r)/100*days+0.5))
+def pdays(b,T,d):
+    """Days of penalty from the last day without penalty b up to T (pw: written off on that date, np: periods when accrual is off)."""
+    if d.get('pw') and d['pw']>b:b=d['pw']
+    n=diff(T,b)
+    if n<=0:return 0
+    for f in d.get('np') or []:
+        lo=max(add(b,1),f[0]);e=add(f[1],-1) if f[1] else T;hi=min(e,T);o=diff(hi,lo)+1
+        if o>0:n-=o
+    return max(0,n)
+def dstat(d,T):
+    g=d.get('debt')
+    if not g or not g.get('amt',0)>0:return None
+    b=g['pb'] if g.get('pb') and g['pb']>g['due'] else g['due'];n=pdays(b,T,d);pe=penalty(g['amt'],n,d.get('pen'))
+    return {'amt':g['amt'],'due':g['due'],'k':g['k'],'days':n,'pen':pe,'total':g['amt']+pe,'late':max(0,diff(T,g['due'])),'over':T>g['due'],'base':b}
+def info(d,t=None):
+    t=t or tod();sc=sched(d);P=d.get('paid') or {};un=[x for x in sc if str(x['k']) not in P];od=[x for x in un if x['due']<t];ods=[]
+    for y in od:
+        n=pdays(y['due'],t,d);ods.append({**y,'days':n,'pen':penalty(y['amt'],n,d.get('pen'))})
+    pe=sum(y['pen'] for y in ods);g=dstat(d,t)
+    return {'sc':sc,'un':un,'x':un[0] if un else None,'od':od,'ods':ods,'pen':pe,'g':g,'owe':sum(y['amt'] for y in od)+pe,'done':not un and not g}
+def minpart(x):return math.ceil(x['amt']*cfgv('dmin',50)/100)
+# ---------- what can be paid, and how a payment is applied to the deal ----------
+def q_now(d,t):
+    """«К оплате сейчас» as the client sees it: every overdue period with its penalty, or the next period when nothing is overdue."""
+    I=info(d,t)
+    if d.get('status')!='active' or not I['x']:return None
+    if I['od']:return {'amt':I['owe'],'pen':I['pen'],'ks':[y['k'] for y in I['ods']],'items':I['ods']}
+    x=I['x'];return {'amt':x['amt'],'pen':0,'ks':[x['k']],'items':[{**x,'days':0,'pen':0}]}
+def q_debt(d,t):
+    g=dstat(d,t) if d.get('status')=='active' else None
+    return g and {'amt':g['total'],'pen':g['pen'],'g':g}
+def plan_period(d,A,t):
+    """A rubles paid on date t for the first unpaid period: the whole period with its penalty, or a part of it (not below dmin %,
+    not while a debt is open). Returns a plan or an error text."""
+    I=info(d,t);x=I['x']
+    if d.get('status')!='active' or not x:return 'Нечего оплачивать.'
+    pen=penalty(x['amt'],pdays(x['due'],t,d),d.get('pen'))
+    if A>=x['amt']+pen:return {'k':x['k'],'pen':pen,'pay':x['amt'],'rest':0,'left':A-x['amt']-pen}
+    if I['g']:return 'Пока не закрыт долг, период можно оплатить только целиком.'
+    mn=minpart(x);pa=A-pen
+    if pa<mn:return f'Сумма за период должна быть не меньше {rub(mn+pen)}.'
+    return {'k':x['k'],'pen':pen,'pay':pa,'rest':x['amt']-pa,'left':0}
+def put_paid(d,k,t,amt,pen,method,qr=None,part=False):
+    p={'date':t,'amt':amt,'pen':pen,'method':method}
+    if part:p['part']=1
+    if qr:p['qr']=qr
+    d.setdefault('paid',{})[str(k)]=p
+def apply_plan(d,p,t,method,qr=None):
+    put_paid(d,p['k'],t,p['pay'],p['pen'],method,qr,p['rest']>0)
+    if p['rest']>0:d['debt']={'k':p['k'],'amt':p['rest'],'due':add(t,int(cfgv('dbd',3)))}
+    return p['left']
+def apply_debt(d,A,t,method,qr=None):
+    """Money for the open debt: the penalty first, then the remainder. Returns what is left over."""
+    g=dstat(d,t)
+    if not g:raise Bad('Долга нет.')
+    if A<=g['pen']:raise Bad(f"Сумма должна быть больше неустойки {rub(g['pen'])}.")
+    pr,left=(g['amt'],A-g['total']) if A>=g['total'] else (A-g['pen'],0);rest=g['amt']-pr
+    z={'date':t,'amt':pr,'pen':g['pen'],'method':method,'k':g['k'],'pv':dict(d['debt'])}
+    if qr:z['qr']=qr
+    d.setdefault('dpays',[]).append(z)
+    if rest>0:
+        d['debt']={**d['debt'],'amt':rest}
+        if t>d['debt']['due']:d['debt']['pb']=t
+    else:d.pop('debt',None)
+    return left
+def apply_money(d,kind_,A,t,method,qr=None):
+    """Bills and unrecognised payments: kind_ is 'period' or 'debt'. Returns what is left over (an overpayment); raises Bad when it cannot be applied."""
+    if kind_=='debt':return apply_debt(d,A,t,method,qr)
+    p=plan_period(d,A,t)
+    if isinstance(p,str):raise Bad(p)
+    left=apply_plan(d,p,t,method,qr)
+    if left>0 and dstat(d,t):
+        try:left=apply_debt(d,left,t,method,qr)
+        except Bad:pass
+    return left
+def lg(d):return {k:v for k,v in d.items() if k not in('img','jwt')}
+def put_srv(i,k,d,act,by='',old=None):
+    """Write a document from a server-side action (a QR payment, a bill): bumps _v for deals so that stale screens get a conflict."""
+    if k=='deal':d['_v']=d.get('_v',0)+1
+    save(i,k,d);db.execute('insert into log values(?,?,?,?,?)',(dt.datetime.now(MSK).isoformat(),act+(('@'+by) if by else ''),i,old and strip(json.dumps(lg(old))),strip(json.dumps(lg(d)))))
+def docs_of(k):
+    return [(i,json.loads(x)) for i,x in db.execute('select id,data from docs where kind=?',(k,)).fetchall()]
+# ---------- Tochka (SBP QR) ----------
+# The owner types the JWT token, the merchant id (merchantId) and the account id (accountId, «счёт/БИК») in Settings.
+def tq():
+    t=doc('tch') or {}
+    if MOCK:return {'mock':1,**t}
+    return t if t.get('jwt') and t.get('merchant') and t.get('account') else None
+def tochka(t,method,path,body=None):
+    rq=urllib.request.Request(TQB+path,json.dumps(body).encode() if body is not None else None,{'Authorization':'Bearer '+t['jwt'],'Content-Type':'application/json'},method=method)
+    return json.load(urllib.request.urlopen(rq,timeout=25))
+def qr_make(t,amt,purpose):
+    """Registers a dynamic QR for amt rubles that is valid until the end of the day (the amount goes to the bank in kopecks, the lifetime in minutes)."""
+    if t.get('mock'):return {'id':'mock'+nid(),'payload':'https://qr.nspk.ru/MOCK'+nid(),'img':None}
+    n=dt.datetime.now(MSK);ttl=max(5,int((dt.datetime.combine(n.date()+dt.timedelta(days=1),dt.time(),MSK)-n).total_seconds()//60))
+    try:
+        r=tochka(t,'POST',f"/sbp/v1.0/qr-code/merchant/{urllib.parse.quote(t['merchant'],safe='')}/{t['account']}",{'Data':{'amount':int(round(amt*100)),'currency':'RUB','paymentPurpose':purpose[:140],
+            'qrcType':'02','ttl':ttl,'imageParams':{'width':400,'height':400,'mediaType':'image/png'}}})['Data']
+        return {'id':r['qrcId'],'payload':r['payload'],'img':(r.get('image') or {}).get('content')}
+    except urllib.error.HTTPError as e:
+        print('tochka qr',e.code,e.read()[:300])
+        raise Bad('Точка не приняла токен. Проверьте его в Настройках.' if e.code in(401,403) else 'Точка не нашла торговую точку или счёт. Проверьте их ID в Настройках.' if e.code in(400,404) else 'Точка не ответила, попробуйте ещё раз.')
+    except Exception as e:
+        print('tochka qr',e);raise Bad('Точка не ответила, попробуйте ещё раз.')
+def qr_paid(t,ids):
+    """Which of the QR codes are paid (the bank's answer)."""
+    if t.get('mock') or not ids:return set()
+    r=tochka(t,'GET','/sbp/v1.0/qr-codes/'+','.join(ids)+'/payment-status')['Data']
+    return {x.get('qrcId') for x in r.get('paymentList',[]) if x.get('status')=='Accepted'}
+def qr_amount(d,kind_,t,bill=None):
+    """(amount, penalty inside it, periods) of a QR of this kind right now; raises Bad when there is nothing to pay."""
+    if kind_=='now':
+        z=q_now(d,t)
+        if not z:raise Bad('Нечего оплачивать.')
+        return z['amt'],z['pen'],z['ks']
+    if kind_=='debt':
+        z=q_debt(d,t)
+        if not z:raise Bad('Долга нет.')
+        return z['amt'],z['pen'],None
+    if kind_=='bill':
+        if not bill or bill.get('status')!='open':raise Bad('Платёж уже закрыт.')
+        if bill['kind']=='period':
+            p=plan_period(d,bill['amt'],t)
+            if isinstance(p,str):raise Bad(p)
+        elif not q_debt(d,t):raise Bad('Долга нет.')
+        return bill['amt'],0,None
+    raise Bad('Неверный запрос.')
+def qr_request(u,cl,b):
+    """A QR for a deal, asked by the client (cl) or by the owner / an administrator with the right «pay». The bank is called without the lock."""
+    with L:
+        ro,x=role(u);t=tod()
+        if cl:
+            if ro!='client':raise Bad('Нет доступа.')
+        elif not(ro=='owner' or (ro=='admin' and 'pay' in x[1].get('perms',[]))):raise Bad('Нет доступа.')
+        tc=tq()
+        if not tc:raise Bad('Оплата по QR не подключена.')
+        i=str(b.get('deal',''));d=ID.fullmatch(i) and doc(i)
+        if not d or d.get('status')!='active' or (cl and d.get('client')!=x):raise Bad('Выкуп не найден.')
+        k=b.get('kind');bid=str(b.get('bill') or '');bill=(doc(bid) if ID.fullmatch(bid) else None) if k=='bill' else None
+        if bill and bill.get('deal')!=i:bill=None
+        amt,pe,ks=qr_amount(d,k,t,bill)
+        for j,q in docs_of('qr'):
+            if q.get('deal')==i and q.get('status')=='open' and q.get('date')==t and q.get('kind')==k and q.get('amt')==amt and q.get('bill')==(bid if bill else None):return {'qr':j}
+        purpose=f"Выкуп электровелосипеда, договор {d.get('contract') or '—'}, {(doc(d.get('client')) or {}).get('name','')}"
+    m=qr_make(tc,amt,purpose)
+    with L:
+        d=doc(i);bill=doc(bid) if bill else None
+        if not d or qr_amount(d,k,t,bill)[0]!=amt or tod()!=t:raise Bad('Данные изменились, откройте экран заново.')
+        qid=nid();put_srv(qid,'qr',{'deal':i,'kind':k,'amt':amt,'pen':pe,'ks':ks,'bill':bid if bill else None,'date':t,'status':'open','tid':m['id'],'payload':m['payload'],'img':m['img'],'ts':dt.datetime.now(MSK).isoformat(timespec='seconds')},'qr','' if cl else str((x[1].get('name') if ro=='admin' else 'owner'))[:40])
+        db.commit();return {'qr':qid}
+def on_paid(qid,q):
+    """The bank confirmed a QR payment. It is credited automatically when nothing changed since the QR was made (same day, same amount);
+    otherwise it goes to «Не распознано». Call with the lock held."""
+    if q.get('status')!='open':return
+    old=dict(q);q['status']='paid';put_srv(qid,'qr',q,'qr-paid','',old)
+    d=doc(q['deal']);t=tod();left=q['amt'];why='Оплата пришла после изменений в выкупе или не в тот день.';ok=False
+    if d and d.get('status')=='active' and t==q['date']:
+        d2=copy.deepcopy(d)
+        try:
+            if q['kind']=='now':
+                z=q_now(d2,t)
+                if z and z['amt']==q['amt'] and z['ks']==q.get('ks'):
+                    for y in z['items']:put_paid(d2,y['k'],t,y['amt'],y['pen'],'СБП',qid)
+                    left=0;ok=True
+            elif q['kind']=='debt':
+                z=q_debt(d2,t)
+                if z and z['amt']==q['amt']:left=apply_debt(d2,q['amt'],t,'СБП',qid);ok=True
+            elif q['kind']=='bill':
+                b=doc(q.get('bill') or '')
+                if b and b.get('status')=='open' and b.get('amt')==q['amt']:
+                    left=apply_money(d2,b['kind'],q['amt'],t,'СБП',qid);ok=True
+                    ob=dict(b);b['status']='paid';b['paid']=dt.datetime.now(MSK).isoformat(timespec='seconds');put_srv(q['bill'],'bill',b,'bill-paid','',ob)
+        except Bad as e:ok=False;why=str(e)
+        if ok:put_srv(q['deal'],'deal',d2,'pay-qr','',d)
+    c=(doc((d or {}).get('client','')) or {}).get('name','')
+    if ok and left<=0:say(f"Оплата по QR: {c}, {rub(q['amt'])}.")
+    else:
+        put_srv(nid(),'unk',{'ts':dt.datetime.now(MSK).isoformat(timespec='seconds'),'amt':left if ok else q['amt'],'qr':qid,'deal':q['deal'],'status':'open','why':'Переплата сверх суммы к оплате.' if ok else why},'unk')
+        say(f"Платёж по QR не распознан: {c}, {rub(left if ok else q['amt'])}. Разберите в приложении.")
+PL_LAST=[0]
+def poll():
+    with L:
+        t=tq()
+        if not t:return
+        lo=add(tod(),-2);op={q['tid']:i for i,q in docs_of('qr') if q.get('status')=='open' and q.get('date','')>=lo}
+    if not op:return
+    try:paid=qr_paid(t,list(op))
+    except Exception as e:print('poll',e);return
+    with L:
+        for tid in paid:
+            i=op.get(tid);q=i and doc(i)
+            if q:on_paid(i,q)
+        db.commit()
+def poll_soon():
+    """Called while a client looks at a QR: asks the bank at most once in 10 seconds, so the payment shows within seconds, not minutes."""
+    if time.time()-PL_LAST[0]>10:PL_LAST[0]=time.time();threading.Thread(target=poll,daemon=True).start()
+# ---------- bills, unrecognised payments, Tochka settings (the owner and administrators with the right «pay») ----------
+def owner_act(p,b,ro,x,P):
+    """Returns the reply. Called with the lock held; raises Bad."""
+    t=tod();by=(str(x[1].get('name',''))[:40] if ro=='admin' else '')
+    if p=='/api/tochka':
+        if ro!='owner':raise Bad('Нет доступа.')
+        old=doc('tch') or {};n=dict(old)
+        if b.get('clear'):n={}
+        else:
+            mr=str(b.get('merchant') or '').strip();ac=str(b.get('account') or '').strip().replace(' ','')
+            if not re.fullmatch(r'[\w-]{1,60}',mr,re.A) or not re.fullmatch(r'[\w/-]{1,80}',ac,re.A):raise Bad('Проверьте ID торговой точки и счёта: только буквы, цифры, дефис и косая черта.')
+            n.update(merchant=mr,account=ac)
+            if b.get('jwt'):n['jwt']=str(b['jwt']).strip()[:5000]
+            n.setdefault('hook',secrets.token_urlsafe(18))
+        db.execute('insert or replace into docs values(?,?,?)',('tch','tch',json.dumps(n)))
+        db.execute('insert into log values(?,?,?,?,?)',(dt.datetime.now(MSK).isoformat(),'tochka','tch',json.dumps({k:('***' if k=='jwt' else v) for k,v in old.items()}),json.dumps({k:('***' if k=='jwt' else v) for k,v in n.items()})));db.commit();return {}
+    if p=='/api/mockpay':
+        if not MOCK or ro!='owner':raise Bad('Нет доступа.')
+        q=doc(str(b.get('qr','')))
+        if not q:raise Bad('QR не найден.')
+        on_paid(b['qr'],q);db.commit();return {}
+    if ro=='admin' and 'pay' not in P:raise Bad('Нет доступа.')
+    if p=='/api/bill':
+        if b.get('do'):
+            i=str(b.get('id',''));z=ID.fullmatch(i) and doc(i)
+            if not z or z.get('status')!='open':raise Bad('Платёж уже закрыт.')
+            old=dict(z)
+            if b['do']=='void':z['status']='void';put_srv(i,'bill',z,'bill-void',by,old);db.commit();return {}
+            if b['do']=='paid':
+                m=b.get('method');d=doc(z['deal'])
+                if m not in('наличные','СБП','перевод') or not d:raise Bad('Выберите способ оплаты.')
+                d2=copy.deepcopy(d);left=apply_money(d2,z['kind'],z['amt'],t,m)
+                put_srv(z['deal'],'deal',d2,'bill-paid',by,d);z['status']='paid';z['paid']=dt.datetime.now(MSK).isoformat(timespec='seconds');z['method']=m;put_srv(i,'bill',z,'bill-paid',by,old)
+                if left>0:put_srv(nid(),'unk',{'ts':z['paid'],'amt':left,'deal':z['deal'],'status':'open','why':'Переплата сверх суммы к оплате.'},'unk',by)
+                db.commit();return {}
+            raise Bad('Неверный запрос.')
+        i=str(b.get('deal',''));d=ID.fullmatch(i) and doc(i);k=b.get('kind')
+        if not d or d.get('status')!='active':raise Bad('Выкуп не найден.')
+        try:A=int(round(float(b.get('amt'))))
+        except Exception:raise Bad('Введите сумму.')
+        if A<1 or A>10000000:raise Bad('Введите сумму.')
+        if any(z.get('deal')==i and z.get('status')=='open' for _,z in docs_of('bill')):raise Bad('У клиента уже есть выставленный платёж. Сначала отмените его или дождитесь оплаты.')
+        if k=='period':
+            pl=plan_period(d,A,t)
+            if isinstance(pl,str):raise Bad(pl)
+            if pl['left']>0:raise Bad(f"Сумма больше, чем нужно за период: не больше {rub(A-pl['left'])}.")
+        elif k=='debt':
+            g=dstat(d,t)
+            if not g:raise Bad('Долга нет.')
+            if A<=g['pen']:raise Bad(f"Сумма должна быть больше неустойки {rub(g['pen'])}.")
+            if A>g['total']:raise Bad(f"Сумма больше долга: не больше {rub(g['total'])}.")
+        else:raise Bad('Неверный запрос.')
+        bid=nid();put_srv(bid,'bill',{'deal':i,'kind':k,'amt':A,'status':'open','ts':dt.datetime.now(MSK).isoformat(timespec='seconds'),'by':by or 'owner'},'bill',by);db.commit();return {'id':bid}
+    if p=='/api/unk':
+        i=str(b.get('id',''));z=ID.fullmatch(i) and doc(i)
+        if not z or z.get('status')!='open':raise Bad('Платёж уже разобран.')
+        old=dict(z)
+        if b.get('do')=='done':z['status']='done';z['note']=str(b.get('note') or '')[:200];put_srv(i,'unk',z,'unk-done',by,old);db.commit();return {}
+        if b.get('do')=='apply':
+            d=doc(z.get('deal',''))
+            if not d or b.get('kind') not in('period','debt'):raise Bad('Выберите, куда засчитать платёж.')
+            d2=copy.deepcopy(d);left=apply_money(d2,b['kind'],z['amt'],t,'СБП',z.get('qr'))
+            put_srv(z['deal'],'deal',d2,'unk-apply',by,d);z['status']='applied';put_srv(i,'unk',z,'unk-apply',by,old)
+            if left>0:put_srv(nid(),'unk',{'ts':dt.datetime.now(MSK).isoformat(timespec='seconds'),'amt':left,'deal':z['deal'],'status':'open','why':'Переплата сверх суммы к оплате.'},'unk',by)
+            db.commit();return {}
+    raise Bad('Неверный запрос.')
 class H(BaseHTTPRequestHandler):
     def send(s,c,b,t='application/json',x=None):
         s.send_response(c);s.send_header('Content-Type',t);s.send_header('Content-Length',str(len(b)))
@@ -219,7 +502,9 @@ class H(BaseHTTPRequestHandler):
                 if s.path=='/api/all':
                     if ro not in('owner','admin'):return s.send(403,b'{}')
                     f=ro=='owner' or hasfin(x[1].get('perms',[]))
-                    r=[{'kind':k,'id':i,'data':vw(k,json.loads(d),f)} for i,k,d in db.execute('select id,kind,data from docs') if ro=='owner' or k!='admin']
+                    pay=ro=='owner' or 'pay' in x[1].get('perms',[])
+                    r=[{'kind':k,'id':i,'data':vw(k,json.loads(d),f)} for i,k,d in db.execute('select id,kind,data from docs') if (ro=='owner' or k!='admin') and k not in('qr','tch') and (pay or k not in('unk','bill'))]
+                    tc=doc('tch') or {};r.append({'kind':'tch','id':'tch','data':{'on':bool(tq()),'merchant':tc.get('merchant',''),'account':tc.get('account',''),'jwt':bool(tc.get('jwt')),'hook':tc.get('hook','')} if ro=='owner' else {'on':bool(tq())}})
                 elif s.path=='/api/log':
                     if ro!='owner':return s.send(403,b'{}')
                     r=[list(q) for q in db.execute('select ts,act,id,old,new from log order by rowid desc limit 250')]
@@ -228,6 +513,22 @@ class H(BaseHTTPRequestHandler):
                 elif ro=='client':r=mine(x)
                 else:r={'role':ro}
             return s.send(200,json.dumps(r).encode())
+        if s.path.startswith('/api/qr/'):
+            u=s.user()
+            if u is None:return s.send(403,b'{}')
+            with L:
+                ro,x=role(u);rw=ID.fullmatch(s.path[8:]) and row(s.path[8:]);q=rw and rw[0]=='qr' and rw[1]
+                if not q:return s.send(404,b'{}')
+                dd=doc(q['deal']) or {}
+                if not(ro in('owner','admin') or (ro=='client' and dd.get('client')==x)):return s.send(403,b'{}')
+                if q.get('status')=='open':poll_soon()
+                return s.send(200,json.dumps({k:q.get(k) for k in('amt','kind','pen','payload','img','status','date')}).encode())
+        if s.path.startswith('/img/'):
+            t=time.time()
+            for a in [a for a,(e,_) in IMG.items() if e<t]:IMG.pop(a,None)
+            z=IMG.get(s.path[5:])
+            if not z:return s.send(404,b'')
+            return s.send(200,z[1],'image/png',{'Content-Disposition':'attachment; filename="qr-oplata.png"','Cache-Control':'no-store'})
         if s.path.startswith('/dl/'):
             ip=('dl',s.ip());t=time.time();FAIL[ip]=[x for x in FAIL.get(ip,[]) if x>t-600]
             for a in [a for a,e in DL.items() if e<t]:DL.pop(a,None)
@@ -239,6 +540,11 @@ class H(BaseHTTPRequestHandler):
         s.send(200,open('static/'+f,'rb').read(),'text/html; charset=utf-8' if f[-1]=='l' else 'application/javascript',{'Cache-Control':'no-cache'})
     def do_POST(s):
         s.path=s.path.split('?')[0]
+        if s.path.startswith('/hook/tochka/'):
+            # the bank says a payment arrived: the body is not trusted, the paid QR codes are asked from the bank
+            with L:tc=(doc('tch') or {}).get('hook')
+            if not tc or not hmac.compare_digest(s.path[13:],tc):return s.send(404,b'')
+            s.rfile.read(min(int(s.headers.get('Content-Length',0)),100000));threading.Thread(target=poll,daemon=True).start();return s.send(200,b'{}')
         u=s.user()
         if u is None:return s.send(403,b'{}')
         n=int(s.headers.get('Content-Length',0))
@@ -252,10 +558,26 @@ class H(BaseHTTPRequestHandler):
             return s.send(200,json.dumps({'url':'/dl/'+k,'name':f'velo-{dt.datetime.now(MSK):%Y-%m-%d-%H%M}.json'}).encode())
         if u==OWNER and p=='/api/restore':
             c,r=restore(b);return s.send(c,json.dumps({'docs':r} if c==200 else {'err':r}).encode())
+        if s.path in('/api/qr','/api/cqr'):
+            try:return s.send(200,json.dumps(qr_request(u,s.path=='/api/cqr',b)).encode())
+            except Bad as e:return s.send(400,json.dumps({'err':str(e)}).encode())
+        if s.path=='/api/qrimg':
+            # the picture of a QR drawn in the app: kept for 10 minutes so that Telegram can download it
+            import base64
+            with L:ro_,_=role(u)
+            if ro_ not in('owner','admin','client'):return s.send(403,b'{}')
+            try:png=base64.b64decode(str(b.get('png','')).split(',')[-1],validate=True)
+            except Exception:return s.send(400,b'{}')
+            if not png.startswith(b'\x89PNG') or len(png)>400000:return s.send(400,b'{}')
+            if len(IMG)>200:IMG.clear()
+            k=secrets.token_urlsafe(16);IMG[k]=(t+600,png);return s.send(200,json.dumps({'url':'/img/'+k}).encode())
         with L:
             ro,x=role(u)
             if ro in('owner','admin'):
                 P=set(x[1].get('perms',[])) if ro=='admin' else None
+                if p in('/api/bill','/api/unk','/api/tochka','/api/mockpay'):
+                    try:return s.send(200,json.dumps(owner_act(p,b,ro,x,P)).encode())
+                    except Bad as e:return s.send(400,json.dumps({'err':str(e)}).encode())
                 who_=ro=='admin' and '@'+str(x[1].get('name',''))[:40] or ''
                 if p in('/api/put','/api/del'):
                     if p=='/api/del' and ro!='owner':return s.send(403,b'{}')
@@ -264,7 +586,7 @@ class H(BaseHTTPRequestHandler):
                     r=db.execute('select kind,data from docs where id=?',(i,)).fetchone();old=r and json.loads(r[1])
                     if p=='/api/put':
                         k=b.get('kind');new=b.get('data')
-                        if k not in KINDS or not isinstance(new,dict) or (r and r[0]!=k):return s.send(400,b'{}')
+                        if k not in KINDS or k in SRV or not isinstance(new,dict) or (r and r[0]!=k):return s.send(400,b'{}')
                         if ro=='admin':
                             new=amerge(P,k,old,new)
                             if new is None:return s.send(403,b'{}')
@@ -360,6 +682,10 @@ def job():
                     with L:snap('app')
                 else:morning(n.date())
             except Exception as e:print(e)
+        if time.time()-PL_LAST[0]>170:
+            PL_LAST[0]=time.time()
+            try:poll()
+            except Exception as e:print('poll',e)
         time.sleep(30)
 def migrate():
     """One-time: administrators who could give early payments / deferrals also get the new right «Неустойка»."""
