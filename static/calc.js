@@ -13,6 +13,14 @@ function sched(d){d.paid=d.paid||{};const P=d.type=='m'?30:7,r=[];for(let k=1;k<
 let e=(d.early||[]).reduce((a,x)=>a+x.amt,0);for(let i=r.length-1;i>=0&&e>0;i--){if(d.paid[r[i].k])break;const c=Math.min(e,r[i].amt);r[i].amt-=c;e-=c}
 return r.filter(x=>x.amt>0||d.paid[x.k])}
 const penalty=(a,days,r)=>Math.round(a*(r==null?0.9:r)/100*days);
-const C={MK,calc,sched,penalty,add,diff,today};
+/* Days of penalty from the last day without penalty b up to date T.
+   d.pw: penalty written off on that date (counting starts again from it); d.np: [[from,to|null],...] periods when accrual is switched off:
+   the days from `from` up to (not including) `to` are not counted. */
+function pdays(b,T,d){d=d||{};if(d.pw&&d.pw>b)b=d.pw;let n=diff(T,b);if(n<=0)return 0;
+(d.np||[]).forEach(f=>{const a1=add(b,1),lo=a1>f[0]?a1:f[0],e=f[1]?add(f[1],-1):T,hi=e<T?e:T,o=diff(hi,lo)+1;if(o>0)n-=o});return Math.max(0,n)}
+const nopen=d=>((d&&d.np)||[]).some(f=>!f[1]);
+/* Debt left after a partial payment of a period: {amt, due, pb, k}. Penalty is counted on the remainder after the due date (pb: date the penalty was last paid). */
+function dstat(d,T){const g=d&&d.debt;if(!g||!(g.amt>0))return null;const b=g.pb&&g.pb>g.due?g.pb:g.due,n=pdays(b,T,d),pen=penalty(g.amt,n,d.pen);return{amt:g.amt,due:g.due,k:g.k,days:n,pen,total:g.amt+pen,late:Math.max(0,diff(T,g.due)),over:T>g.due,base:b}}
+const C={MK,calc,sched,penalty,pdays,nopen,dstat,add,diff,today};
 if(typeof module!='undefined')module.exports=C;else g.C=C;
 })(this);
