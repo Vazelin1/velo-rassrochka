@@ -20,8 +20,19 @@ KINDS=('client','bike','deal','cfg','admin','qr','unk','bill','tch','reschedule'
 SRV=('qr','unk','bill','tch','reschedule','paymentreport','statementlink')
 PERMS=('pay','early','pen','clients','deals','bikes','reports')
 FINP={'deals','bikes','reports'}  # rights that let an administrator see prices, purchase costs and profit
-HID={'deal':('total','tax','acq','receipt','cost','disc','mk','extras','down','refund','down_fees'),'bike':('cost','exp','wo')}
+HID={'deal':('total','tax','acq','receipt','cost','disc','mk','extras','down','refund','down_fees','tariff'),'bike':('cost','exp','wo')}
 PUBCFG=('id','dd','pen','dmin','dbd','multi_discount')
+BIKE_MODELS=('monster','u2','u2pro')
+BATTERY_COUNTS=(1,2)
+
+def tariff_key(model,batteries):
+    return f'{model}-2-akb' if batteries==2 else model
+
+BIKE_TARIFF_KEYS={tariff_key(model,count) for model in BIKE_MODELS for count in BATTERY_COUNTS}
+WEEKLY_TERMS=(8,12,16,20,22,26)
+LEGACY_WEEKLY_TERMS={str(weeks) for weeks in range(8,27)}
+WEEKLY_TERM_LIST=', '.join(map(str,WEEKLY_TERMS))
+CLIENT_DEFERRAL_LIMIT=4
 ID=re.compile(r'[a-z0-9]{1,16}')
 NO=object()
 def strip(x):
@@ -154,7 +165,7 @@ def mine(cid):
     cf=doc('cfg') or {}
     requests=[{**z,'id':i} for i,z in docs_of('reschedule') if z.get('deal') in ids]
     reports = [{**payment_report_summary(z), 'id': i} for i,z in docs_of('paymentreport') if z.get('deal') in ids and z.get('client')==cid]
-    return {'role':'client','name':c.get('name',''),'deals':out,'requests':requests,'paymentreports':reports,'dd':cf.get('dd',2),'dmin':max(50,cf.get('dmin',50)),'dbd':cf.get('dbd',3),'multi_discount':cf.get('multi_discount',1.5),'qr':bool(tq()),'bills':bills,'ct':{'tg':safe_link(cf.get('ctg')),'mx':safe_link(cf.get('cmx')),'phone':safe_phone(cf.get('cphone'))}}
+    return {'role':'client','name':c.get('name',''),'deals':out,'requests':requests,'paymentreports':reports,'dd':cf.get('dd',2),'defer_limit':CLIENT_DEFERRAL_LIMIT,'dmin':max(50,cf.get('dmin',50)),'dbd':cf.get('dbd',3),'multi_discount':cf.get('multi_discount',1.5),'qr':bool(tq()),'bills':bills,'ct':{'tg':safe_link(cf.get('ctg')),'mx':safe_link(cf.get('cmx')),'phone':safe_phone(cf.get('cphone'))}}
 def adm_of(u):
     """The administrator whose Telegram ID is u: (id, data) or None."""
     for i,d in db.execute("select id,data from docs where kind='admin'").fetchall():
@@ -164,12 +175,12 @@ def role(u):
     if u==OWNER:return 'owner',None
     a=adm_of(u)
     if a:return ('off',a) if a[1].get('disabled') else ('admin',a)
-    b=db.execute('select client from bind where tg=?',(u,)).fetchone()
-    return ('client',b[0]) if b else ('new',None)
+    b=db.execute("select bind.client,docs.data from bind join docs on docs.id=bind.client and docs.kind='client' where bind.tg=?",(u,)).fetchone()
+    return ('client',b[0]) if b and not json.loads(b[1]).get('erased') else ('new',None)
 def hasfin(P):return bool(set(P)&FINP)
-def vw(k,d,f):
-    """Document as an administrator without financial rights may see it."""
-    if f:return d
+def vw(k,d,f,owner=False):
+    """Document fields visible to the current role."""
+    if f:return {x:y for x,y in d.items() if x!='purchaseCosts'} if k=='cfg' and not owner else d
     if k=='cfg':return {x:y for x,y in d.items() if x in PUBCFG}
     out = {x:y for x,y in d.items() if x not in HID.get(k,())}
     if k == 'deal':
@@ -266,6 +277,8 @@ def validate_backup(records,bindings):
     for identifier,(kind,data) in records.items():
         if kind=='deal':
             require(data.get('client'),'client');require(data.get('bike'),'bike')
+            if data.get('status')=='active' and any(records[data[field]][1].get('erased') for field in ('client','bike')):
+                raise Bad('Активный выкуп связан с удалённой карточкой.')
             valid_date(data.get('start'))
             if data.get('type') not in ('w','m') or type(data.get('n')) is not int or not 1<=data['n']<=5200 or data.get('status') not in ('active','archived','seized','lost'):
                 raise Bad(f'В копии повреждён график выкупа {identifier}.')
@@ -303,6 +316,8 @@ def validate_backup(records,bindings):
             if not isinstance(data.get('name'),str):raise Bad(f'В копии отсутствует имя записи {identifier}.')
             if kind=='bike':
                 if 'cost' in data:amount(data['cost'])
+                if 'batteries' in data and not valid_batteries(data['batteries']):
+                    raise Bad('В копии повреждена комплектация велосипеда.')
                 for expense in objects(data,'exp'):
                     valid_date(expense.get('date'));amount(expense.get('amt'))
                 if data.get('wo'):
@@ -310,12 +325,16 @@ def validate_backup(records,bindings):
         elif kind=='cfg':
             if data.get('mk') and not isinstance(data['mk'].get('w'),dict):raise Bad('В копии повреждены тарифы.')
             if data.get('ds') and not all(isinstance(x,list) and len(x)==2 for x in data['ds']):raise Bad('В копии повреждены скидки.')
+            if 'tariffs' in data:validate_tariffs(data['tariffs'], restoring=True)
+            if 'purchaseCosts' in data:validate_purchase_costs(data['purchaseCosts'])
             for field in ('pen','tax','dmin','dd','dbd','multi_discount','receipt','acq'):
                 if data.get(field) is not None:amount(data[field])
     seen=set()
     for tg_id,client in bindings:
         if type(tg_id) is not int or tg_id<=0 or tg_id in seen:raise Bad('В копии повреждены привязки Telegram.')
-        require(client,'client');seen.add(tg_id)
+        require(client,'client')
+        if records[client][1].get('erased'):raise Bad('В копии есть привязка удалённого клиента.')
+        seen.add(tg_id)
 def restore(b):
     """returns (code, reply). Replaces docs and bind with the backup content; the audit log is kept."""
     try:
@@ -456,6 +475,27 @@ def positive_amount(value):
     except (InvalidOperation,TypeError,ValueError,OverflowError):
         raise Bad('Введите сумму с точностью до копейки.')
     return money(cents)
+
+def valid_batteries(count):
+    return type(count) is int and count in BATTERY_COUNTS
+
+def validate_purchase_costs(costs):
+    if not isinstance(costs,dict) or any(key not in BIKE_TARIFF_KEYS for key in costs):
+        raise Bad('Проверьте закупочные цены по комплектациям.')
+    for key,value in costs.items():
+        costs[key]=positive_amount(value)
+
+def validate_tariffs(tariffs, previous=None, *, restoring=False):
+    if not isinstance(tariffs,dict) or any(key not in BIKE_TARIFF_KEYS for key in tariffs):
+        raise Bad('Проверьте тарифы по комплектациям велосипеда.')
+    terms={str(weeks) for weeks in WEEKLY_TERMS}
+    for model,rates in tariffs.items():
+        if not isinstance(rates,dict):raise Bad('Тарифы модели должны быть заданы по срокам.')
+        old_rates=(previous or {}).get(model,{})
+        for term,amount in rates.items():
+            legacy=term in LEGACY_WEEKLY_TERMS and (restoring or (term in old_rates and amount==old_rates[term]))
+            if term not in terms and not legacy:raise Bad(f'Доступные сроки выкупа: {WEEKLY_TERM_LIST} недель.')
+            rates[term]=positive_amount(amount)
 
 def payment_quote(d,options,t,settings=None):
     if not isinstance(options,dict):raise Bad('Выберите способ оплаты.')
@@ -642,7 +682,8 @@ def replan(d,first_due,weekly,t,client_anchor=None):
         changed.append({'k': key, 'due': due_date, 'amt': amount})
 
     deferred = [row for row in kept if str(row['k']) not in paid and payment_deadline(d,row) >= t]
-    ending = sorted(deferred + changed,key=lambda row:(row['due'],row['k']))
+    def schedule_order(row):return row['due'],row['k']
+    ending = sorted(deferred + changed,key=schedule_order)[-2:]
     previous = ending[-2]['due'] if len(ending) > 1 else None
     last = ending[-1]
     return {
@@ -651,6 +692,7 @@ def replan(d,first_due,weekly,t,client_anchor=None):
         'firstAmount': changed[0]['amt'], 'last': last['due'], 'lastAmount': last['amt'],
         'previous': previous, 'gap': diff(last['due'], previous) if previous else None, 'step': step,
         'before': future, 'after': changed,
+        'beforeEnding':sorted(deferred + future,key=schedule_order)[-2:], 'afterEnding':ending,
         'keptOverdue': sum(row['amt'] for row in kept if str(row['k']) not in paid and payment_deadline(d,row) < t),
         'keptDeferred': sum(row['amt'] for row in deferred),
         'debt': (dstat(d,t) or {}).get('total',0),
@@ -741,7 +783,10 @@ def apply_money(d,kind_,A,t,method,qr=None,fees=None,source=None,settle_debt=Tru
         try:left=apply_debt(d,left,t,method,qr,source=source,fees=fees)
         except Bad:pass
     return left
-def lg(d):return {k:v for k,v in d.items() if k not in('img','jwt','attachment')}
+def lg(d):return {k:v for k,v in d.items() if k not in('img','jwt','attachment','payload')}
+def client_log_actor(identifier):
+    name=str((doc(identifier) or {}).get('name') or '').strip()[:40]
+    return f'Клиент · {name}' if name else 'Клиент'
 def put_srv(i,k,d,act,by='',old=None):
     """Write a document from a server-side action (a QR payment, a bill): bumps _v for deals so that stale screens get a conflict."""
     if k=='deal':completion_notice(old,d)
@@ -750,13 +795,13 @@ def put_srv(i,k,d,act,by='',old=None):
 def docs_of(k):
     return [(i,json.loads(x)) for i,x in db.execute('select id,data from docs where kind=?',(k,)).fetchall()]
 
-def download_file(name,mime,data):
+def download_file(name,mime,data,deal=None):
     now=time.time()
     for key in list(FILE_DL):
         if FILE_DL[key][0]<now:FILE_DL.pop(key,None)
     while len(FILE_DL)>=32:FILE_DL.pop(next(iter(FILE_DL)))
     key=secrets.token_urlsafe(22)
-    FILE_DL[key]=(now+180,name,mime,data)
+    FILE_DL[key]=(now+180,name,mime,data,deal)
     return {'url':'/files/'+key,'name':name}
 
 def calendar_data(key,d,t):
@@ -817,7 +862,7 @@ def payment_report_action(b,ro,x,t,by):
         data={'deal':key,'client':x,'date':date,'amount':amount,'reference':reference,'note':note,'attachment':attachment,'status':'pending'}
         for i,record in docs_of('paymentreport'):
             if all(record.get(k)==v for k,v in data.items()):return {'id':i}
-        key=nid();data['created']=dt.datetime.now(MSK).isoformat();put_srv(key,'paymentreport',data,'payment-report')
+        key=nid();data['created']=dt.datetime.now(MSK).isoformat();put_srv(key,'paymentreport',data,'payment-report',by)
         say(f"Обращение об оплате от {(doc(x) or {}).get('name','')}, {amount/100:.2f} ₽. Откройте карточку выкупа.")
         return {'id':key}
     i=str(b.get('id') or '');record=ID.fullmatch(i) and row(i)
@@ -828,7 +873,7 @@ def payment_report_action(b,ro,x,t,by):
     if action=='receipt':
         if not data.get('attachment'):raise Bad('Квитанция не прикреплена.')
         extension,mime,raw=proof_file(data['attachment'])
-        return download_file('kvitanciya.'+extension,mime,raw)
+        return download_file('kvitanciya.'+extension,mime,raw,data['deal'])
     if action=='resolve' and data.get('status')=='pending':
         status=b.get('status')
         if status not in ('credited','not_found'):raise Bad('Выберите результат проверки.')
@@ -1013,7 +1058,7 @@ def statement_review(operations):
         result.append(op)
     return result
 
-def link_statement(operation,deal,source):
+def link_statement(operation,deal,source,by=''):
     key=statement_key(operation);date=operation['date'];amount=operation['amount']
     old=doc(key)
     matching=next((p for p in existing_receipts(deal) if p['source']==source and (p['date'],p['amount'])==(date,amount)),None)
@@ -1023,7 +1068,7 @@ def link_statement(operation,deal,source):
     if any(i!=key and z.get('deal')==deal and z.get('source')==source and z.get('date')==date for i,z in docs_of('statementlink')):
         raise Bad('Этот платёж уже связан с другой строкой выписки.')
     data={'deal':deal,'source':source,'date':date,'amount':amount,'reference':str(operation.get('reference') or '')[:180]}
-    put_srv(key,'statementlink',data,'statement-link',old=old)
+    put_srv(key,'statementlink',data,'statement-link',by,old)
     return matching
 # ---------- Tochka (SBP QR) ----------
 # The owner types the JWT token, the merchant id (merchantId) and the account id (accountId, «счёт/БИК») in Settings.
@@ -1103,13 +1148,14 @@ def register_qr(u,cl,b):
         before=fingerprint(d)
         amt,pe,ks,quote=qr_amount(d,k,t,bill,options,settings)
         for j,q in docs_of('qr'):
-            if q.get('deal')==i and q.get('status')=='open' and q.get('date')==t and qr_expiry(q)>dt.datetime.now(MSK) and q.get('kind')==k and q.get('amt')==amt and q.get('bill')==(bid if bill else None) and q.get('fingerprint')==before and q.get('quote')==quote:return {'qr':j}
+            if q.get('deal')==i and q.get('status')=='open' and not q.get('access_revoked') and q.get('date')==t and qr_expiry(q)>dt.datetime.now(MSK) and q.get('kind')==k and q.get('amt')==amt and q.get('bill')==(bid if bill else None) and q.get('fingerprint')==before and q.get('quote')==quote:return {'qr':j}
         purpose=f"Выкуп электровелосипеда, договор {d.get('contract') or '—'}, {(doc(d.get('client')) or {}).get('name','')}"
+        actor=client_log_actor(x) if cl else str(x[1].get('name') or 'Администратор')[:40] if ro=='admin' else 'Владелец'
     m=qr_make(tc,amt,purpose)
     with L:
         d=doc(i);bill=doc(bid) if bill else None
         if not d or fingerprint(d)!=before or qr_amount(d,k,t,bill,options,settings)[0]!=amt or tod()!=t:raise Bad('Данные изменились, откройте экран заново.')
-        qid=nid();put_srv(qid,'qr',{'deal':i,'kind':k,'amt':amt,'pen':pe,'ks':ks,'quote':quote,'options':options,'settings':settings,'fingerprint':before,'bill':bid if bill else None,'date':t,'status':'open','tid':m['id'],'payload':m['payload'],'img':m['img'],'expires':m.get('expires'),'ts':dt.datetime.now(MSK).isoformat(timespec='seconds')},'qr','' if cl else str((x[1].get('name') if ro=='admin' else 'owner'))[:40])
+        qid=nid();put_srv(qid,'qr',{'deal':i,'kind':k,'amt':amt,'pen':pe,'ks':ks,'quote':quote,'options':options,'settings':settings,'fingerprint':before,'bill':bid if bill else None,'date':t,'status':'open','tid':m['id'],'payload':m['payload'],'img':m['img'],'expires':m.get('expires'),'ts':dt.datetime.now(MSK).isoformat(timespec='seconds')},'qr',actor)
         db.commit();return {'qr':qid}
 
 def bank_payment_date(payment,q):
@@ -1157,13 +1203,13 @@ def on_paid(qid,q,payment=None):
                 b=doc(q.get('bill') or '')
                 if b and b.get('status')=='open' and b.get('amt')==q['amt']:
                     left=apply_money(d2,b['kind'],q['amt'],t,'СБП',qid);ok=True
-                    ob=dict(b);b['status']='paid';b['paid']=dt.datetime.now(MSK).isoformat(timespec='seconds');put_srv(q['bill'],'bill',b,'bill-paid','',ob)
+                    ob=dict(b);b['status']='paid';b['paid']=dt.datetime.now(MSK).isoformat(timespec='seconds');put_srv(q['bill'],'bill',b,'bill-paid','Банк',ob)
         except Bad as e:ok=False;why=str(e)
         if ok:put_srv(q['deal'],'deal',d2,'pay-qr','',d)
     c=(doc((d or {}).get('client','')) or {}).get('name','')
     if ok and left<=0:say(f"Оплата по QR: {c}, {rub(q['amt'])}.")
     else:
-        put_srv(nid(),'unk',{'ts':q['confirmedAt'],'date':t,'amt':left if ok else q['amt'],'qr':qid,'deal':q['deal'],'status':'open','why':'Переплата сверх суммы к оплате.' if ok else why},'unk')
+        put_srv(nid(),'unk',{'ts':q['confirmedAt'],'date':t,'amt':left if ok else q['amt'],'qr':qid,'deal':q['deal'],'status':'open','why':'Переплата сверх суммы к оплате.' if ok else why},'unk','Банк')
         say(f"Платёж по QR не распознан: {c}, {rub(left if ok else q['amt'])}. Разберите в приложении.")
 PL_LAST=[0]
 def poll():
@@ -1174,7 +1220,7 @@ def poll():
             if qr_expiry(q)+dt.timedelta(days=1)<=now:
                 old=dict(q);q['status']='review';put_srv(i,'qr',q,'qr-review','',old)
                 put_srv(nid(),'unk',{'deal':q['deal'],'qr':i,'amt':q['amt'],'ts':now.isoformat(timespec='seconds'),
-                                    'status':'open','unconfirmed':True,'why':'Истекло окно проверки QR. Найдите операцию в выписке банка.'},'unk')
+                                    'status':'open','unconfirmed':True,'why':'Истекло окно проверки QR. Найдите операцию в выписке банка.'},'unk','Автосверка')
             elif t:
                 op[q['tid']]=i
         db.commit()
@@ -1233,9 +1279,10 @@ def owner_act(p,b,ro,x,P):
                 if b.get('preview'):return {'duplicate':duplicate}
                 if duplicate and b.get('confirmedDuplicate')!=duplicate['source']:raise Bad('По QR уже есть платёж на эту сумму. Проверьте операцию.')
                 source=nid();d2=copy.deepcopy(d);left=apply_money(d2,z['kind'],z['amt'],t,m,source=source)
-                put_srv(z['deal'],'deal',d2,'bill-paid',by,d);z['status']='paid';z['paid']=dt.datetime.now(MSK).isoformat(timespec='seconds');z['method']=m;put_srv(i,'bill',z,'bill-paid',by,old)
+                actor=by or 'Владелец'
+                put_srv(z['deal'],'deal',d2,'bill-paid',actor,d);z['status']='paid';z['paid']=dt.datetime.now(MSK).isoformat(timespec='seconds');z['method']=m;put_srv(i,'bill',z,'bill-paid',actor,old)
                 if left>0:put_srv(nid(),'unk',{'ts':z['paid'],'date':t,'amt':left,'deal':z['deal'],'status':'open','method':m,
-                                            'source':source,'why':'Переплата сверх суммы к оплате.'},'unk',by)
+                                            'source':source,'why':'Переплата сверх суммы к оплате.'},'unk',actor)
                 db.commit();return {}
             raise Bad('Неверный запрос.')
         i=str(b.get('deal',''));d=ID.fullmatch(i) and doc(i);k=b.get('kind')
@@ -1354,8 +1401,9 @@ def grant_deferral(b, ro, x, t, by):
     if d.get('status') != 'active' or not I['un']:
         raise Bad('Отсрочка недоступна.')
     if ro == 'client':
-        if any(g.get('by') == 'client' for g in d.get('defer') or []):
-            raise Bad('Вы уже использовали отсрочку по этому выкупу.')
+        if sum(g.get('by')=='client' for g in d.get('defer') or [])>=CLIENT_DEFERRAL_LIMIT:
+            raise Bad('Вы использовали все отсрочки по этому выкупу.')
+        if 'version' in b:check_version(d,b)
         if I['od'] or (I['g'] or {}).get('over'):
             raise Bad('Отсрочка доступна до начала просрочки.')
         installment = I['x']
@@ -1434,21 +1482,51 @@ def validate_new_deal(d,t):
     total=minor(positive_amount(d.get('total')))
     down=minor(positive_amount(d['down'])) if d.get('down') not in (None,0) else 0
     if down>total:raise Bad('Первоначальный взнос больше цены выкупа.')
-    if not isinstance(d.get('n'),int) or isinstance(d['n'],bool) or not 1<=d['n']<=5200 or d.get('type') not in ('w','m'):
-        raise Bad('Укажите срок выкупа.')
+    weeks=d.get('n')
+    if type(weeks) is not int or weeks not in WEEKLY_TERMS or d.get('type')!='w':
+        raise Bad(f'Доступные сроки выкупа: {WEEKLY_TERM_LIST} недель.')
     if d.get('shift') or d.get('schedule') is not None or d.get('early') or d.get('debt') or d.get('dpays') or d.get('bonuses'):
         raise Bad('При оформлении требуется исходный график.')
+    record=row(d.get('bike'))
+    bike=record[1] if record and record[0]=='bike' else {}
+    model=bike.get('model')
+    if model not in BIKE_MODELS:raise Bad('Укажите модель в карточке велосипеда.')
+    batteries=bike.get('batteries',1)
+    if not valid_batteries(batteries):raise Bad('Укажите количество аккумуляторов в карточке велосипеда.')
+    weekly=cfgv('tariffs',{}).get(tariff_key(model,batteries),{}).get(str(weeks))
+    if weekly is None:raise Bad('Задайте недельный платёж для комплектации и срока в настройках.')
+    tariff={'model':model,'weeks':weeks,'weekly':weekly}
+    selected=d.get('tariff')
+    if not isinstance(selected,dict):raise Bad('Выберите тариф выкупа.')
+    if batteries==2 or 'batteries' in selected:
+        if not valid_batteries(selected.get('batteries')):raise Bad('Проверьте количество аккумуляторов.')
+        tariff['batteries']=batteries
+    if selected!=tariff:raise Bad('Комплектация или тариф изменились. Откройте оформление выкупа заново.')
+    extras=d.get('extras') or []
+    if not isinstance(extras,list) or not all(isinstance(extra,dict) for extra in extras):
+        raise Bad('Проверьте дополнительные позиции.')
+    if extras and 'batteries' in tariff:raise Bad('В тариф уже включены аккумуляторы из комплектации.')
+    additional=0
+    for extra in extras:
+        positive_amount(extra.get('cost'))
+        additional+=minor(positive_amount(extra.get('price')))
+    if total!=minor(weekly)*weeks+additional:raise Bad('Цена выкупа должна совпадать с тарифом и дополнительными позициями.')
+    d['tariff']=tariff
+    d['cost']=bike.get('cost',0)
     if total==down:
         if d.get('paid') or d.get('pay')!=0 or d.get('last')!=0:raise Bad('Цена уже покрыта первоначальным взносом.')
         if d.get('down_method') not in ('наличные','СБП','перевод'):raise Bad('Выберите способ оплаты.')
         return
-    payment=minor(positive_amount(d.get('pay'))) if d['n']>1 else 0
+    balance=total-down
+    regular=balance//weeks
+    if not regular:raise Bad('Остаток слишком мал для выбранного срока.')
+    payment=minor(positive_amount(d.get('pay')))
     last=minor(positive_amount(d.get('last')))
-    if down+payment*(d['n']-1)+last!=total:raise Bad('Сумма взносов должна равняться цене выкупа.')
+    if payment!=regular or last!=balance-regular*(weeks-1):raise Bad('Суммы взносов должны совпадать с расчётом по тарифу.')
     paid=d.get('paid') or {};first=paid.get('1') if isinstance(paid,dict) else None
     if not isinstance(first,dict) or len(paid)!=1 or first.get('date')!=start or first.get('pen',0)!=0 or first.get('part'):
         raise Bad('Проверьте оплату первого взноса при оформлении.')
-    if minor(positive_amount(first.get('amt')))!=(payment if d['n']>1 else last) or first.get('method') not in ('наличные','СБП','перевод'):
+    if minor(positive_amount(first.get('amt')))!=payment or first.get('method') not in ('наличные','СБП','перевод'):
         raise Bad('Сумма и способ оплаты первого взноса должны совпадать с графиком.')
 
 def close_pending_schedule(key,t,by):
@@ -1563,11 +1641,22 @@ def clear_statement_surplus(key,sources,t,by):
 def workflow_action(p,b,ro,x):
     """Authorised business actions run in one database transaction under L."""
     t=tod();by=str(x[1].get('name',''))[:40] if ro=='admin' else ''
+    if ro=='client':by=client_log_actor(x)
     if p=='/api/defer':return grant_deferral(b,ro,x,t,by)
     if p=='/api/calendar':
         key,d=action_deal(b,ro,x,permission='deals',allow_client=True)
         if d.get('status')!='active':raise Bad('Выкуп закрыт.')
-        return download_file('platezhi.ics','text/calendar; charset=utf-8',calendar_data(key,d,t))
+        return download_file('platezhi.ics','text/calendar; charset=utf-8',calendar_data(key,d,t),key)
+    if p=='/api/tariff-image':
+        if not (ro=='owner' or (ro=='admin' and hasfin(x[1].get('perms',[])))):raise Bad('Нет доступа.')
+        model,weeks,batteries=b.get('model'),b.get('weeks'),b.get('batteries',1)
+        if model not in BIKE_MODELS or not valid_batteries(batteries) or weeks is not None and (type(weeks) is not int or weeks not in WEEKLY_TERMS):
+            raise Bad('Проверьте комплектацию и срок выкупа.')
+        image=decode_upload(b.get('png'),1200000)
+        if not image.startswith(b'\x89PNG\r\n\x1a\n'):raise Bad('Выберите изображение PNG.')
+        key=tariff_key(model,batteries)
+        filename=f'grafik-{key}-{weeks}-ned.png' if weeks else f'tarify-{key}.png'
+        return download_file(filename,'image/png',image)
     if p=='/api/payment-report':return payment_report_action(b,ro,x,t,by)
     if p=='/api/statement':
         if not (ro=='owner' or (ro=='admin' and 'pay' in x[1].get('perms',[]))):raise Bad('Нет доступа.')
@@ -1575,7 +1664,7 @@ def workflow_action(p,b,ro,x):
             operations,unfiltered,skipped=read_statement(b.get('file'))
             return {'rows':statement_review(operations),'unfiltered':unfiltered,'skipped':skipped}
         if b.get('do')=='link' and isinstance(b.get('operation'),dict):
-            return link_statement(b['operation'],str(b.get('deal') or ''),str(b.get('source') or ''))
+            return link_statement(b['operation'],str(b.get('deal') or ''),str(b.get('source') or ''),by)
         raise Bad('Загрузите выписку.')
     if p=='/api/pay-debt':
         key,d=action_deal(b,ro,x);date=deal_payment_date(d,b.get('date',t),t);amount=positive_amount(b.get('amount'))
@@ -1609,7 +1698,7 @@ def workflow_action(p,b,ro,x):
     if p=='/api/bike-writeoff':
         if not (ro=='owner' or (ro=='admin' and 'bikes' in x[1].get('perms',[]))):raise Bad('Нет доступа.')
         bike_id=str(b.get('bike') or '');record=ID.fullmatch(bike_id) and row(bike_id)
-        if not record or record[0]!='bike' or record[1].get('wo'):raise Bad('Велосипед недоступен для списания.')
+        if not record or record[0]!='bike' or record[1].get('wo') or record[1].get('erased'):raise Bad('Велосипед недоступен для списания.')
         bike=record[1];check_version(bike,b)
         active=[(i,d) for i,d in docs_of('deal') if d.get('bike')==bike_id and d.get('status')=='active']
         if len(active)>1 or (active[0][0] if active else None)!=b.get('deal'):
@@ -1688,8 +1777,8 @@ def workflow_action(p,b,ro,x):
             if statement is not None:
                 if quote['surplus']:
                     put_srv(nid(),'unk',{'ts':dt.datetime.now(MSK).isoformat(),'date':date,'amt':quote['surplus'],'deal':key,
-                                        'source':source,'status':'open','why':'Переплата из выписки сверх остатка выкупа.'},'unk',by)
-                link_statement(statement,key,source)
+                                        'source':source,'status':'open','why':'Переплата из выписки сверх остатка выкупа.'},'unk',by or 'Владелец')
+                link_statement(statement,key,source,by)
             return quote
         recover_reductions(key,d)
         if p=='/api/move-payment':
@@ -1715,7 +1804,7 @@ def workflow_action(p,b,ro,x):
         request_id=nid()
         request={'deal':key,'client':x,'anchor':anchor,'reason':str(b.get('reason') or '')[:1000],
                  'status':'pending','created':dt.datetime.now(MSK).isoformat(),**reschedule_details(plan)}
-        put_srv(request_id,'reschedule',request,'reschedule-request')
+        put_srv(request_id,'reschedule',request,'reschedule-request',by)
         say(f"Заявка на изменение графика: {(doc(x) or {}).get('name','')}, {rub(plan['pay'])}, следующий платёж {dm(D(plan['first']))}.")
         return {'id':request_id}
     if p=='/api/reschedule-manual':
@@ -1762,6 +1851,56 @@ def workflow_action(p,b,ro,x):
         return {}
     raise Bad('Неверный запрос.')
 
+def delete_archived_card(identifier,kind,card,request,ts):
+    """Erase the archived profile and keep the references used by financial history. Called under L."""
+    if card.get('erased'):return {'deleted':False}
+    if not card.get('archived'):raise Bad('Удаление доступно из архива.')
+    related=[(key,deal) for key,deal in docs_of('deal') if deal.get(kind)==identifier or (
+        kind=='bike' and any(identifier in (item.get('from'),item.get('to')) for item in deal.get('swaps') or []))]
+    if any(deal.get('status')=='active' for _,deal in related):
+        raise Bad('Карточка связана с действующим выкупом. Сначала закройте выкуп.')
+    deals={key for key,_ in related}
+    if request.get('version')!=card.get('_v',0) or request.get('deals')!=sorted(deals):return None
+
+    history={'archived':True,'erased':True,'_v':card.get('_v',0)+1}
+    if kind=='client':
+        history['name']='Удалённый клиент'
+    else:
+        history.update(name='Удалённый велосипед',created=card.get('created'),cost=card.get('cost') or 0,
+                       exp=[{'date':item['date'],'amt':item['amt']} for item in card.get('exp') or []])
+        if card.get('wo'):
+            history['wo']={'date':card['wo']['date'],'loss':card['wo'].get('loss',0),'reason':'Списание'}
+
+    audit_ids={identifier}
+    with db:
+        if kind=='client':
+            db.execute('delete from notice_queue where chat in (select tg from bind where client=?)',(identifier,))
+            db.execute('delete from inv where client=?',(identifier,))
+            db.execute('delete from bind where client=?',(identifier,))
+            private=[(key,) for record_kind in ('paymentreport','reschedule') for key,data in docs_of(record_kind)
+                     if data.get('client')==identifier or data.get('deal') in deals]
+            db.executemany('delete from docs where id=?',private)
+            audit_ids.update(key for (key,) in private)
+            audit_ids.update(deals)
+            for key,deal in related:
+                if 'private_note' in deal:
+                    deal.pop('private_note');deal['_v']=deal.get('_v',0)+1;save(key,'deal',deal)
+        for key,qr in docs_of('qr'):
+            if qr.get('deal') in deals:
+                qr.pop('payload',None);qr.pop('img',None);qr['access_revoked']=True
+                save(key,'qr',qr);audit_ids.add(key)
+        reminders=[(f'%:rem:{key}:%',) for key in deals]
+        db.executemany('delete from notice_queue where k like ?',reminders)
+        db.executemany('delete from ntf where k like ?',reminders)
+        save(identifier,kind,history)
+        db.executemany('delete from log where id=?',[(key,) for key in audit_ids])
+        db.execute('insert into log values(?,?,?,?,?)',(ts,'delete-archived-'+kind,'',None,json.dumps({'name':'Архив','retained_deals':len(deals)})))
+    for key,entry in list(FILE_DL.items()):
+        if entry[4] in deals:FILE_DL.pop(key)
+    for key,entry in list(IMG.items()):
+        if entry[2] in deals or (kind=='client' and entry[3]==identifier):IMG.pop(key)
+    return {'deleted':True}
+
 def attachment_headers(name):
     return {'Content-Disposition':f'attachment; filename="{name}"','Cache-Control':'no-store',
             'Access-Control-Allow-Origin':'https://web.telegram.org','Access-Control-Expose-Headers':'Content-Disposition'}
@@ -1794,7 +1933,7 @@ class H(BaseHTTPRequestHandler):
                     if ro not in('owner','admin'):return s.send(403,b'{}')
                     f=ro=='owner' or hasfin(x[1].get('perms',[]))
                     pay=ro=='owner' or 'pay' in x[1].get('perms',[])
-                    r=[{'kind':k,'id':i,'data':payment_report_summary(json.loads(d)) if k=='paymentreport' else vw(k,json.loads(d),f)} for i,k,d in db.execute('select id,kind,data from docs') if (ro=='owner' or k!='admin') and k not in('qr','tch','statementlink') and (pay or k not in('unk','bill','paymentreport')) and (ro=='owner' or k!='reschedule' or 'deals' in x[1].get('perms',[]))]
+                    r=[{'kind':k,'id':i,'data':payment_report_summary(json.loads(d)) if k=='paymentreport' else vw(k,json.loads(d),f,ro=='owner')} for i,k,d in db.execute('select id,kind,data from docs') if (ro=='owner' or k!='admin') and k not in('qr','tch','statementlink') and (pay or k not in('unk','bill','paymentreport')) and (ro=='owner' or k!='reschedule' or 'deals' in x[1].get('perms',[]))]
                     tc=doc('tch') or {};r.append({'kind':'tch','id':'tch','data':{'on':bool(tq()),'merchant':tc.get('merchant',''),'account':tc.get('account',''),'jwt':bool(tc.get('jwt')),'hook':tc.get('hook','')} if ro=='owner' else {'on':bool(tq())}})
                 elif s.path=='/api/log':
                     if ro!='owner':return s.send(403,b'{}')
@@ -1809,21 +1948,22 @@ class H(BaseHTTPRequestHandler):
             if u is None:return s.send(403,b'{}')
             with L:
                 ro,x=role(u);rw=ID.fullmatch(s.path[8:]) and row(s.path[8:]);q=rw and rw[0]=='qr' and rw[1]
-                if not q:return s.send(404,b'{}')
+                if not q or q.get('access_revoked'):return s.send(404,b'{}')
                 dd=doc(q['deal']) or {}
                 if not(ro in('owner','admin') or (ro=='client' and dd.get('client')==x)):return s.send(403,b'{}')
                 if q.get('status')=='open':poll_soon()
                 return s.send(200,json.dumps({k:q.get(k) for k in('amt','kind','pen','payload','img','status','date','expires')}).encode())
         if s.path.startswith('/img/'):
             t=time.time()
-            for a in [a for a,(e,_) in IMG.items() if e<t]:IMG.pop(a,None)
-            z=IMG.get(s.path[5:])
+            with L:
+                for a in [a for a,entry in IMG.items() if entry[0]<t]:IMG.pop(a,None)
+                z=IMG.get(s.path[5:])
             if not z:return s.send(404,b'')
             return s.send(200,z[1],'image/png',attachment_headers('qr-oplata.png'))
         if s.path.startswith('/files/'):
             with L:entry=FILE_DL.get(s.path[7:])
             if not entry or entry[0]<time.time():return s.send(404,b'')
-            _,name,mime,data=entry
+            _,name,mime,data,_=entry
             return s.send(200,data,mime,attachment_headers(name))
         if s.path.startswith('/dl/'):
             ip=('dl',s.ip());t=time.time();FAIL[ip]=[x for x in FAIL.get(ip,[]) if x>t-600]
@@ -1863,19 +2003,26 @@ class H(BaseHTTPRequestHandler):
             except Bad as e:return s.send(400,json.dumps({'err':str(e)}).encode())
         if s.path=='/api/qrimg':
             # the picture of a QR drawn in the app: kept for 10 minutes so that Telegram can download it
-            import base64
-            with L:ro_,_=role(u)
-            if ro_ not in('owner','admin','client'):return s.send(403,b'{}')
             try:png=base64.b64decode(str(b.get('png','')).split(',')[-1],validate=True)
             except Exception:return s.send(400,b'{}')
             if not png.startswith(b'\x89PNG') or len(png)>400000:return s.send(400,b'{}')
-            if len(IMG)>200:IMG.clear()
-            k=secrets.token_urlsafe(16);IMG[k]=(t+600,png);return s.send(200,json.dumps({'url':'/img/'+k}).encode())
+            with L:
+                qr=str(b.get('qr') or '');deal_id=None
+                ro_,subject=role(u)
+                if ro_ not in('owner','admin','client'):return s.send(403,b'{}')
+                if qr:
+                    record=ID.fullmatch(qr) and row(qr)
+                    if not record or record[0]!='qr' or record[1].get('access_revoked'):return s.send(404,b'{}')
+                    deal_id=record[1]['deal'];deal=doc(deal_id)
+                    if not deal or (ro_=='client' and deal.get('client')!=subject):return s.send(403,b'{}')
+                if len(IMG)>200:IMG.clear()
+                k=secrets.token_urlsafe(16);IMG[k]=(t+600,png,deal_id,subject if ro_=='client' else None)
+            return s.send(200,json.dumps({'url':'/img/'+k}).encode())
         with L:
             ro,x=role(u)
             if p in ('/api/payquote','/api/pay','/api/pay-debt','/api/cancel-debt-pay','/api/move-payment','/api/cancel-payment','/api/defer',
                      '/api/reschedule-request','/api/reschedule','/api/reschedule-manual','/api/close-deal','/api/return-deal',
-                     '/api/calendar','/api/deal-note','/api/bike-preparation','/api/bike-writeoff','/api/payment-report','/api/statement'):
+                     '/api/calendar','/api/tariff-image','/api/deal-note','/api/bike-preparation','/api/bike-writeoff','/api/payment-report','/api/statement'):
                 try:
                     result=workflow_action(p,b,ro,x);db.commit()
                     return s.send(200,json.dumps(result).encode())
@@ -1893,18 +2040,31 @@ class H(BaseHTTPRequestHandler):
                     i=str(b.get('id',''))
                     if not ID.fullmatch(i):return s.send(400,b'{}')
                     r=db.execute('select kind,data from docs where id=?',(i,)).fetchone();old=r and json.loads(r[1])
+                    if p=='/api/del' and ((r and r[0] in ('bike','client')) or b.get('kind') in ('bike','client')):
+                        if not r:return s.send(200,b'{"deleted":false}')
+                        if r[0] not in ('bike','client') or b.get('kind',r[0])!=r[0]:return s.send(409,b'{"err":"conflict"}')
+                        try:result=delete_archived_card(i,r[0],old,b,ts)
+                        except Bad as e:return s.send(400,json.dumps({'err':str(e)}).encode())
+                        if result is None:return s.send(409,b'{"err":"conflict"}')
+                        return s.send(200,json.dumps(result).encode())
                     if p=='/api/put':
                         k=b.get('kind');new=b.get('data')
                         if k not in KINDS or k in SRV or not isinstance(new,dict) or (r and r[0]!=k):return s.send(400,b'{}')
+                        if k in ('bike','client') and ((old or {}).get('erased') or new.get('erased')):
+                            return s.send(409,b'{"err":"conflict"}')
                         if ro=='admin':
                             new=amerge(P,k,old,new)
                             if new is None:return s.send(403,b'{}')
                         elif k=='admin':
                             new=clean_admin(i,old,new)
                             if new is None:return s.send(400,b'{}')
-                        if old is not None and new.get('_v',0)!=old.get('_v',0):return s.send(409,b'{"err":"conflict"}')
+                        if ((old is not None and new.get('_v',0)!=old.get('_v',0)) or
+                            (old is None and k in ('client','bike','deal') and (b.get('existing') or new.get('_v',0)))):
+                            return s.send(409,b'{"err":"conflict"}')
                         if k=='cfg':
                             try:
+                                if 'tariffs' in new:validate_tariffs(new['tariffs'],(old or {}).get('tariffs'))
+                                if 'purchaseCosts' in new:validate_purchase_costs(new['purchaseCosts'])
                                 for field in ('multi_discount','receipt','acq','tax','pen'):
                                     if field in new and (not old or old.get(field)!=new[field]):
                                         value=float(new[field])
@@ -1920,9 +2080,15 @@ class H(BaseHTTPRequestHandler):
                                         if not minimum<=value<=365:raise Bad('Укажите срок в пределах 365 дней.')
                                         new[field]=value
                             except (Bad,ValueError,TypeError) as e:return s.send(400,json.dumps({'err':str(e)}).encode())
+                        if k=='bike' and new.get('model') is not None and new['model'] not in BIKE_MODELS:
+                            return s.send(400,json.dumps({'err':'Выберите модель велосипеда.'}).encode())
+                        if k=='bike' and 'batteries' in new and not valid_batteries(new['batteries']):
+                            return s.send(400,json.dumps({'err':'Выберите один или два аккумулятора.'}).encode())
                         if k=='deal':
                             try:
                                 if not old:validate_new_deal(new,tod())
+                                elif new.get('tariff')!=old.get('tariff'):
+                                    raise Bad('Тариф фиксируется при оформлении выкупа.')
                                 if new.get('pen') is not None and (not old or old.get('pen')!=new.get('pen')):
                                     rate=float(new['pen'])
                                     if not math.isfinite(rate) or not 0<=rate<=100:raise Bad('Неустойка должна быть от 0 до 100%.')
@@ -1962,18 +2128,21 @@ class H(BaseHTTPRequestHandler):
                         if ro!='owner' or not a or a[0]!='admin':return s.send(403,b'{}')
                     else:
                         a=ID.fullmatch(c) and row(c)
-                        if (ro=='admin' and 'clients' not in P) or not a or a[0]!='client':return s.send(403,b'{}')
+                        if (ro=='admin' and 'clients' not in P) or not a or a[0]!='client' or a[1].get('erased'):return s.send(403,b'{}')
                     if p=='/api/invite':
                         if not BOT[0]:return s.send(500,b'{}')
                         quick=bool(b.get('qr')) and not c.startswith('adm:')
                         k=('q_' if quick else '')+secrets.token_urlsafe(12);ttl=600 if quick else 7*86400
                         db.execute('delete from inv where exp<?',(t,));db.execute('insert into inv values(?,?,?)',(k,c,t+ttl))
-                        db.execute('insert into log values(?,?,?,?,?)',(ts,'invite'+who_,c,None,None));db.commit()
+                        action='invite-qr' if quick else 'invite'
+                        subject=json.dumps({'name':a[1].get('name'),'login_method':'QR' if quick else 'Ссылка','ttl':ttl})
+                        db.execute('insert into log values(?,?,?,?,?)',(ts,action+who_,c,None,subject));db.commit()
                         return s.send(200,json.dumps({'tok':k,'bot':BOT[0],'qr':quick,'ttl':ttl}).encode())
                     if c.startswith('adm:'):
                         a[1]['tg']=None;a[1]['_v']=a[1].get('_v',0)+1;save(c[4:],'admin',a[1])
                     else:db.execute('delete from bind where client=?',(c,))
-                    db.execute('insert into log values(?,?,?,?,?)',(ts,'unbind'+who_,c,None,None));db.commit();return s.send(200,b'{}')
+                    subject=json.dumps({'name':a[1].get('name')})
+                    db.execute('insert into log values(?,?,?,?,?)',(ts,'unbind'+who_,c,None,subject));db.commit();return s.send(200,b'{}')
                 return s.send(404,b'{}')
             if ro=='new' and p=='/api/claim':
                 TRY[u]=[q for q in TRY.get(u,[]) if q>t-3600]
@@ -1984,13 +2153,16 @@ class H(BaseHTTPRequestHandler):
                     a=row(tgt[4:]);c=a and a[0]=='admin' and not a[1].get('disabled') and a[1]
                     if c and ph and digits(c.get('phone'))==ph:
                         c['tg']=u;c['_v']=c.get('_v',0)+1;save(tgt[4:],'admin',c);db.execute('delete from inv where tok=?',(str(b.get('tok')),))
-                        db.execute('insert into log values(?,?,?,?,?)',(ts,'login@'+c.get('name','')[:40],tgt,None,None));db.commit()
+                        access=json.dumps({'name':c.get('name'),'login_method':'Ссылка'})
+                        db.execute('insert into log values(?,?,?,?,?)',(ts,'login@'+c.get('name','')[:40],tgt,None,access));db.commit()
                         say(f"Администратор {c.get('name')} вошёл в приложение.");return s.send(200,b'{}')
                 else:
-                    c=tgt and doc(tgt)
+                    record=tgt and row(tgt);c=record and record[0]=='client' and record[1]
                     quick=str(b.get('tok','')).startswith('q_')
-                    if c and (quick or (ph and digits(c.get('phone'))==ph)):
-                        db.execute('insert or replace into bind values(?,?)',(u,tgt));db.execute('delete from inv where tok=?',(str(b.get('tok')),));db.commit()
+                    if c and not c.get('erased') and (quick or (ph and digits(c.get('phone'))==ph)):
+                        db.execute('insert or replace into bind values(?,?)',(u,tgt));db.execute('delete from inv where tok=?',(str(b.get('tok')),))
+                        access=json.dumps({'name':c.get('name'),'login_method':'QR' if quick else 'Ссылка'})
+                        db.execute('insert into log values(?,?,?,?,?)',(ts,'login-client@'+client_log_actor(tgt),tgt,None,access));db.commit()
                         say(f"Клиент {c.get('name')} вошёл в приложение.");return s.send(200,b'{}')
                 if len(TRY[u])==3:say(f'Неудачные попытки входа (Telegram ID {u}).')
                 return s.send(403,b'{}')
@@ -2034,13 +2206,15 @@ def morning(t):
             db.execute("delete from ntf where k<? and substr(k,1,1) between '0' and '9'",(str(t-dt.timedelta(days=60)),))
             ready=db.execute('select k,chat,body,attempts from notice_queue where next<=? order by next limit 50',(now,)).fetchall()
         for key,chat,body,attempts in ready:
+            with L:
+                if not db.execute('select 1 from notice_queue where k=?',(key,)).fetchone():continue
             try:
                 delivered=tg('sendMessage',{'chat_id':chat,'text':body}).get('ok') is True
             except Exception as error:
                 print('reminder',type(error).__name__);delivered=False
             with L,db:
                 if delivered:
-                    db.execute('insert or ignore into ntf values(?)',(key,))
+                    db.execute('insert or ignore into ntf select k from notice_queue where k=?',(key,))
                     db.execute('delete from notice_queue where k=?',(key,))
                 else:
                     retry=time.time()+min(1800,30*2**min(attempts,6))
