@@ -1,18 +1,31 @@
 (function(g){
 const MK={w:{8:30,12:42,16:55,20:68,26:88},m:{2:30,3:42,4:55,5:68,6:88}},DS={30000:2,50000:4};
+const BIKE_MODELS={monster:'Монстр',u2:'U2',u2pro:'U2 Pro'};
+const BATTERY_COUNTS=[1,2];
+const WEEKLY_TERMS=[8,12,16,20,22,26];
+const tariffKey=(model,batteries=1)=>batteries===2?model+'-2-akb':model;
 const up=(x,s)=>Math.ceil(x/s-1e-9)*s;
 function add(d,n){const t=new Date(d+'T00:00:00Z');t.setUTCDate(t.getUTCDate()+n);return t.toISOString().slice(0,10)}
 const diff=(a,b)=>Math.round((new Date(a)-new Date(b))/864e5);
 const today=()=>new Date(Date.now()+108e5).toISOString().slice(0,10);
 const minor=n=>Math.round(n*100), money=n=>n/100;
-function calc(o){const mk=((o.mk||MK)[o.type]||{})[o.n]||0,d=o.disc!=null&&o.disc!==''?+o.disc:((o.ds||[[30000,2],[50000,4]]).find(x=>x[0]==o.down)||[0,0])[1],
-bike=Math.round(o.cost*(1+(mk-d)/100)),ex=(o.extras||[]).reduce((a,e)=>a+e.price,0),exc=(o.extras||[]).reduce((a,e)=>a+e.cost,0),
-total=bike+ex,bal=money(minor(total-(o.down||0))),
-tax=Math.round(total*(o.tax==null?7:o.tax)/100),acq=Math.round(total*(o.acq==null?0:o.acq)/100),receipt=Math.round(total*(o.receipt||0)/100),profit=total-o.cost-exc-tax-acq-receipt;
+function calc(o){const fixed=o.weekly!=null,mk=fixed?0:((o.mk||MK)[o.type]||{})[o.n]||0,d=fixed?0:o.disc!=null&&o.disc!==''?+o.disc:((o.ds||[[30000,2],[50000,4]]).find(x=>x[0]==o.down)||[0,0])[1],
+cost=o.cost||0,bike=fixed?money(minor(o.weekly)*o.n):Math.round(cost*(1+(mk-d)/100)),
+extra=(o.extras||[]).reduce((sum,e)=>sum+minor(e.price),0),exc=(o.extras||[]).reduce((a,e)=>a+e.cost,0),
+total=money(minor(bike)+extra),bal=money(minor(total)-minor(o.down||0)),
+tax=Math.round(total*(o.tax==null?7:o.tax)/100),acq=Math.round(total*(o.acq==null?0:o.acq)/100),receipt=Math.round(total*(o.receipt||0)/100),profit=total-cost-exc-tax-acq-receipt;
 const rounded=up(bal/o.n,o.type=='w'?100:1000), balance=minor(bal);
-const pay=balance<=0?0:balance>minor(rounded)*(o.n-1)?rounded:Math.floor(bal/o.n)||money(Math.floor(balance/o.n));
+const pay=balance<=0?0:fixed?money(Math.floor(balance/o.n)):balance>minor(rounded)*(o.n-1)?rounded:Math.floor(bal/o.n)||money(Math.floor(balance/o.n));
 const last=money(balance-minor(pay)*(o.n-1));
-return{mk,d,bike,total,bal,pay,last,tax,acq,receipt,profit,pct:o.cost?profit/o.cost*100:0}}
+return{mk,d,bike,total,bal,pay,last,tax,acq,receipt,profit,pct:cost?profit/cost*100:0}}
+function weeklyProfit({weekly,weeks,cost,tax,acq,receipt}){
+    const payment=minor(weekly),gross=payment*weeks;
+    const totalFee=rate=>Math.round(payment*rate/100)*weeks;
+    const taxFee=totalFee(tax),bankFee=totalFee(acq),receiptFee=totalFee(receipt);
+    const net=gross-taxFee-bankFee-receiptFee,profit=net-minor(cost);
+    return {gross:money(gross),tax:money(taxFee),acq:money(bankFee),receipt:money(receiptFee),
+        net:money(net),profit:money(profit),pct:profit/minor(cost)*100};
+}
 function sched(d){
     const paid=d.paid||{},step=d.type=='m'?30:7;
     if(Array.isArray(d.schedule)){
@@ -167,15 +180,17 @@ function replan(d,firstDue,weekly,date=today(),clientAnchor=null){
             amt:final?money(minor(balance)-minor(weekly)*i):weekly
         });
     }
-    const schedule=[...kept,...changed].sort((a,b)=>a.due.localeCompare(b.due)||a.k-b.k);
+    const bySchedule=(a,b)=>a.due.localeCompare(b.due)||a.k-b.k;
+    const schedule=[...kept,...changed].sort(bySchedule);
     const deferred=kept.filter(row=>!paid[row.k]&&deadline(d,row)>=date);
-    const ending=[...deferred,...changed].sort((a,b)=>a.due.localeCompare(b.due)||a.k-b.k);
+    const ending=[...deferred,...changed].sort(bySchedule).slice(-2);
     const previous=ending.at(-2)?.due??null,final=ending.at(-1);
     return {schedule,balance,count,pay:weekly,asOf:date,first:firstDue,firstAmount:changed[0].amt,last:final.due,
         lastAmount:final.amt,previous,gap:previous?diff(final.due,previous):null,step,before:future,after:changed,
+        beforeEnding:[...deferred,...future].sort(bySchedule).slice(-2),afterEnding:ending,
         keptOverdue:kept.filter(row=>!paid[row.k]&&deadline(d,row)<date).reduce((sum,row)=>sum+row.amt,0),
         keptDeferred:deferred.reduce((sum,row)=>sum+row.amt,0),debt:dstat(d,date)?.total||0};
 }
-const C={MK,calc,sched,deadline,unpaid,penalty,pdays,nopen,penaltyDetail,dstat,paymentQuote,changeable,scheduleBounds,replan,add,diff,today,minor,money};
+const C={MK,BIKE_MODELS,BATTERY_COUNTS,WEEKLY_TERMS,tariffKey,calc,weeklyProfit,sched,deadline,unpaid,penalty,pdays,nopen,penaltyDetail,dstat,paymentQuote,changeable,scheduleBounds,replan,add,diff,today,minor,money};
 if(typeof module!='undefined')module.exports=C;else g.C=C;
 })(this);

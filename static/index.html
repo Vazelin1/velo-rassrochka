@@ -165,14 +165,35 @@ nav .bar{pointer-events:auto;display:flex;width:100%;max-width:520px;background:
 
 [hidden]{display:none!important}
 .help-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.help-line .qi{position:static;flex:none}
+.help-line .qi{position:static;transform:none;flex:none}
 .fold summary{cursor:pointer;min-height:48px;padding:4px 0;list-style-position:inside}
 .fold summary b{font-size:18px}.fold summary .mu{display:block;margin-top:4px;font-size:14px}
 .week-nav{display:flex;justify-content:space-between;gap:8px;margin:12px 0}
 .data-table{width:100%;border-collapse:collapse;font-size:13px;margin:12px 0}
 .data-table th,.data-table td{padding:9px 3px;text-align:right;border-bottom:1px solid var(--ln);white-space:nowrap}
 .data-table th:first-child{text-align:left}.data-table thead{color:var(--mu)}.data-table .today{background:var(--tint)}
-.table-scroll{overflow-x:auto}.plan-table td{text-align:left}.plan-table tbody td{white-space:normal;vertical-align:top}
+.journal-table{table-layout:fixed}
+.journal-table th,.journal-table td{text-align:left;white-space:normal;overflow-wrap:anywhere;vertical-align:top}
+.journal-table th:first-child{width:35%}
+.btn.client-calculator{white-space:normal}
+.tariff-editor{border:0;margin:0;padding:0;min-width:0}
+.tariff-editor .card .fld:first-child{margin-top:0}
+.tariff-editor .tariff-hint{margin:6px 0 0}
+.tariff-editor .card>.btn{margin-top:14px}
+.tariff-rate{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.tariff-rate h2{margin:0;font-size:18px}
+.tariff-rate .fld{width:min(50%,170px);margin:0}
+.tariff-rate input{padding:9px 10px}
+.tariff-totals,.tariff-fees{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0 0}
+.tariff-totals{background:var(--tint);border-radius:12px;padding:10px}
+.tariff-fees{border-top:1px solid var(--ln);padding:9px 2px 0}
+.tariff-totals dt,.tariff-fees dt,.tariff-net span{font-size:12px;color:var(--mu)}
+.tariff-totals dd,.tariff-fees dd{margin:4px 0 0;font-weight:650;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.tariff-totals dd{font-size:15px}
+.tariff-fees dd{font-size:13px}
+.tariff-totals small{display:block;margin-top:3px;font-size:11px;font-weight:500;color:var(--mu)}
+.tariff-net{display:flex;gap:8px;justify-content:space-between;align-items:baseline;margin:10px 2px 0;font-size:13px}
+.table-scroll{overflow-x:auto}.plan-table td,.plan-table th{text-align:left}.plan-table tbody td,.plan-table tbody th{white-space:normal;vertical-align:top}
 .cp.contact-links a{text-decoration:none;color:inherit}.block-copy{white-space:pre-wrap;overflow-wrap:anywhere}
 .fold>.grp,.fold>.sub,.fold>.card{margin-left:0;margin-right:0}
 .chart-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;margin:12px 0}
@@ -264,8 +285,8 @@ window.addEventListener('unhandledrejection',e=>{const r=e.reason;e.preventDefau
 let S={clients:[],bikes:[],deals:[],admins:[],bills:[],unks:[],reschedules:[],paymentreports:[],tch:{},cfg:{}},V=[['home']],ME,tab='clients',qs='',allSch=false,ph=[],lastLoad=0;
 const isOwner=()=>ME&&ME.role=='owner',can=p=>isOwner()||!!(ME&&(ME.perms||[]).includes(p)),canFin=()=>isOwner()||!!(ME&&ME.fin);
 async function load(quiet){const a=await api('/api/all');S={clients:[],bikes:[],deals:[],admins:[],bills:[],unks:[],reschedules:[],paymentreports:[],tch:{},cfg:{}};a.forEach(d=>{if(d.kind=='cfg')S.cfg=d.data;else if(d.kind=='tch')S.tch=d.data;else if(S[d.kind+'s'])S[d.kind+'s'].push({...d.data,id:d.id})});lastLoad=Date.now();if(!quiet)render(true)}
-async function put(kind,o){if(!o.id){o.id=Math.random().toString(36).slice(2,10);o.created=new Date().toISOString()}
-try{await api('/api/put',{kind,id:o.id,data:o})}catch(e){if(e=='conflict'){await load();await uiAlert('Эти данные только что изменились (другой администратор или вход). Экран обновлён, повторите действие.');throw ABORT}
+async function put(kind,o){const existing=!!o.id&&['client','bike','deal'].includes(kind);if(!o.id){o.id=Math.random().toString(36).slice(2,10);o.created=new Date().toISOString()}
+try{await api('/api/put',{kind,id:o.id,data:o,existing})}catch(e){if(e=='conflict'){await load();await uiAlert('Эти данные только что изменились (другой администратор или вход). Экран обновлён, повторите действие.');throw ABORT}
 if(e=='код 403'){await uiAlert('У вас нет прав на это действие.');throw ABORT}throw e}
 await load()}
 /* ---------- navigation */
@@ -288,7 +309,7 @@ const nm=id=>(S.clients.find(c=>c.id==id)||{}).name||'?',bk=id=>(S.bikes.find(c=
 const ini=n=>(String(n||'?').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('')||'?').toUpperCase();
 const chip=(t,tone)=>`<span class="chip t-${tone||'n'}">${esc(t)}</span>`;
 const kv=(a,b)=>`<div class=kv><span>${a}</span><b>${b}</b></div>`;
-const fold=(title,body)=>`<details class="card fold"><summary><b>${title}</b></summary>${body}</details>`;
+const fold=(title,body,attributes='')=>`<details class="card fold"${attributes?' '+attributes:''}><summary><b>${title}</b></summary>${body}</details>`;
 const empty=(i,t)=>`<div class=empty>${ic(i)}<div>${t}</div></div>`;
 function center(i,h,t){$('#app').innerHTML=`<div class=center>${ic(i,'l')}<h1>${esc(h)}</h1><p>${tx2(t)}</p></div>`}
 const seg=(id,L,sel,cls)=>`<div class="seg ${cls||''}" id=${id}>${L.map((x,i)=>`<button type=button class="${(sel==null?i==0:x==sel)?'on':''}" onclick="segSel(this)">${esc(x)}</button>`).join('')}</div>`;
@@ -366,7 +387,7 @@ const backBtn=()=>`<button class=back onclick=back()>${ic('left')}Назад</bu
 function home(){const A=act().map(d=>({d,...info(d)})),t=C.today();
 const dbt=A.filter(a=>a.g).sort((a,b)=>a.g.due.localeCompare(b.g.due)),od=A.filter(a=>a.od.length).sort((a,b)=>b.ods[0].late-a.ods[0].late),ok=A.filter(a=>!a.od.length&&a.x).sort((a,b)=>C.deadline(a.d,a.x).localeCompare(C.deadline(b.d,b.x))).slice(0,10),dn=A.filter(a=>a.done);
 const bkw=bkWarn();
-return `<div class=hd><div><small>${dlong(t)}</small><h1>Главная</h1></div>${canFin()?`<button class=ib onclick="go('calcS')" aria-label="Калькулятор">${ic('calc')}</button>`:''}</div>
+return `<div class=hd><div><small>${dlong(t)}</small><h1>Главная</h1></div>${canFin()?`<button type=button class="btn sec sm client-calculator" onclick="go('calcS')">${ic('calc','s')}Расчёт для клиента</button>`:''}</div>
 ${dailyPlan()}${bkw}${scheduleRequests()}${paymentReportQueue()}${unkBlock()}`+
 (dbt.length?`<h2 class="sec ${dbt.some(a=>a.g.over)?'t-er':'t-wa'}"><span class=bdg aria-label="Должников: ${dbt.length}">${dbt.length}</span>Должники</h2><div class=grp>`+dbt.map(a=>dealRow(a,a.g.over?chip(`${a.g.late} ${dayWord(a.g.late)}`,'er'):chip(`до ${fs(a.g.due)}`,'wa'),`долг ${m(a.g.amt)}${a.g.pen?` + неустойка ${m(a.g.pen)}`:''}`,m(a.g.total))).join('')+'</div>':'')+
 (od.length?`<h2 class="sec t-er"><span class=bdg aria-label="Просрочек: ${od.length}">${od.length}</span>Просрочены, идёт неустойка</h2><div class=grp>`+od.map(a=>dealRow(a,chip(`${a.ods[0].late} ${dayWord(a.ods[0].late)}`,'er'),oweSub(a),m(a.owe))).join('')+'</div>':'')+
@@ -422,50 +443,98 @@ function seasonality(){
 /* ---------- database */
 const hit=x=>!qs.trim()||String(x||'').toLowerCase().includes(qs.trim().toLowerCase());
 const PREP={inspection:['На осмотре','wa'],repair:['В ремонте','er'],ready:['Готов к выдаче','ok']};
+const modelName=model=>Object.hasOwn(C.BIKE_MODELS,model)?C.BIKE_MODELS[model]:'';
+const modelOptions=selected=>Object.entries(C.BIKE_MODELS).map(([id,name])=>`<option value="${id}" ${selected==id?'selected':''}>${name}</option>`).join('');
+const batteryOptions=selected=>C.BATTERY_COUNTS.map(count=>`<option value="${count}" ${selected==count?'selected':''}>${count} АКБ</option>`).join('');
+const configurationName=(model,batteries=1)=>`${modelName(model)} · ${batteries} АКБ`;
+const configurations=Object.keys(C.BIKE_MODELS).flatMap(model=>C.BATTERY_COUNTS.map(batteries=>({
+    model,batteries,key:C.tariffKey(model,batteries),name:configurationName(model,batteries)
+})));
+const tariffTerms=(model,batteries=1)=>{
+    const rates=S.cfg.tariffs?.[C.tariffKey(model,batteries)];
+    return C.WEEKLY_TERMS.flatMap(weeks=>{const weekly=rates?.[weeks];return weekly>0?[{weeks,weekly}]:[]});
+};
 const bikeReady=b=>!b.archived&&!dealOf('bike',b.id)&&(!b.preparation||b.preparation.status=='ready');
 const bikeStatus=b=>b.archived?[b.wo?'Списан':'В архиве','n']:b.preparation?PREP[b.preparation.status]||PREP.ready:['Свободен','n'];
 const findRow=(icon,title,subtitle,page,id,status)=>`<button class=row onclick="go('${page}','${id}')"><span class=gl>${ic(icon)}</span><span class=tx><b>${esc(title)}</b><span>${esc(subtitle)}</span></span>${status?chip(...status):ic('right','s')}</button>`;
+const baseSection=(title,rows)=>rows.length?`<h2 class=sec>${title}</h2><div class=grp>${rows.join('')}</div>`:'';
 function searchBase(){
     const query=qs.trim(),digits=query.replace(/\D/g,''),isPhone=digits.length>=3&&/^[+\d\s().-]+$/.test(query);
     const phoneHit=p=>isPhone&&String(p||'').replace(/\D/g,'').includes(digits.slice(-10));
     const clientHit=c=>c&&(hit(c.name)||hit(c.phone)||phoneHit(c.phone)||phoneHit(c.phones));
     const bikeHit=b=>b&&(hit(b.name)||hit(b.vin));
-    const clients=S.clients.filter(clientHit),bikes=S.bikes.filter(bikeHit);
+    const clients=S.clients.filter(c=>!c.erased&&clientHit(c)),bikes=S.bikes.filter(b=>!b.erased&&bikeHit(b));
     const cs=new Set(clients.map(c=>c.id)),bs=new Set(bikes.map(b=>b.id));
     const deals=S.deals.filter(d=>cs.has(d.client)||bs.has(d.bike)||hit(d.contract)).sort((a,b)=>(a.status!='active')-(b.status!='active')||newest(a,b));
-    const view=(title,rows)=>rows.length?`<h2 class=sec>${title}</h2><div class=grp>${rows.join('')}</div>`:'';
-    return view('Выкупы',deals.map(d=>findRow('doc',nm(d.client),[bk(d.bike),d.contract&&`договор ${d.contract}`].filter(Boolean).join(' · '),'deal',d.id,d.status=='active'?[tag(d),cls(d)]:['В архиве','n'])))+
-        view('Клиенты',clients.map(c=>findRow('user',c.name,c.phone,'fClient',c.id,c.archived?['В архиве','n']:null)))+
-        view('Велосипеды',bikes.map(b=>findRow('bike',b.name,b.vin,b.archived?'bikeView':'fBike',b.id,dealOf('bike',b.id)?['Под выкупом','bl']:bikeStatus(b))))||empty('search','Ничего не найдено');
+    return baseSection('Выкупы',deals.map(d=>findRow('doc',nm(d.client),[bk(d.bike),d.contract&&`договор ${d.contract}`].filter(Boolean).join(' · '),'deal',d.id,d.status=='active'?[tag(d),cls(d)]:['В архиве','n'])))+
+        baseSection('Клиенты',clients.map(c=>findRow('user',c.name,c.phone,'fClient',c.id,c.archived?['В архиве','n']:null)))+
+        baseSection('Велосипеды',bikes.map(b=>findRow('bike',b.name,b.vin,b.archived?'bikeView':'fBike',b.id,dealOf('bike',b.id)?['Под выкупом','bl']:bikeStatus(b))))||empty('search','Ничего не найдено');
 }
-function baseList(){let l='';
-if(qs.trim())return searchBase();
-if(tab=='clients')l=S.clients.filter(c=>!c.archived&&(hit(c.name)||hit(c.phone))).sort(newest).map(c=>{const d=dealOf('client',c.id);return `<button class=row onclick="${d?`go('deal','${d.id}')`:`go('fClient','${c.id}')`}">${d?mini(d,c.name):`<span class="av t-n">${esc(ini(c.name))}</span>`}<span class=tx><b>${esc(c.name)}</b><span>${esc(c.phone||'')}</span></span><span class=rt>${d?chip(tag(d),cls(d)):chip('без выкупа')}</span></button>`}).join('');
-else if(tab=='bikes'){
+const openBikeGroups=new Set();
+function baseBikeGroups(){
     const bikes=S.bikes.filter(b=>!b.archived).sort(newest);
-    return fold(`Велосипеды · ${bikes.length}`,bikes.length?`<div class=grp>${bikes.map(b=>{
+    const bikeRow=b=>{
         const d=dealOf('bike',b.id);
-        return findRow('bike',b.name,[b.vin,canFin()&&b.cost?m(b.cost):''].filter(Boolean).join(' · '),d?'deal':'fBike',d?.id||b.id,d?[tag(d),cls(d)]:bikeStatus(b));
-    }).join('')}</div>`:empty('bike','Пока нет велосипедов'));
+        return findRow('bike',b.name,[modelName(b.model)&&`${b.batteries??1} АКБ`,b.vin,canFin()&&b.cost?m(b.cost):''].filter(Boolean).join(' · '),d?'deal':'fBike',d?.id||b.id,d?[tag(d),cls(d)]:bikeStatus(b));
+    };
+    return Object.entries(C.BIKE_MODELS).map(([model,name])=>{
+        const label=model=='monster'?'Монстры':name;
+        const rows=bikes.filter(b=>b.model==model).map(bikeRow);
+        return fold(`${label} · ${rows.length}`,rows.length?`<div class=grp>${rows.join('')}</div>`:empty('bike','Пока нет велосипедов этой модели'),
+            `${openBikeGroups.has(model)?'open ':''}ontoggle="if(this.isConnected){if(this.open)openBikeGroups.add('${model}');else openBikeGroups.delete('${model}')}"`);
+    }).join('')+baseSection('Без модели',bikes.filter(b=>!modelName(b.model)).map(bikeRow));
 }
-else l=S.deals.filter(d=>d.status!='active'&&(hit(nm(d.client))||hit(bk(d.bike)))).sort(newest).map(d=>{const s={archived:['выкуплен','ok'],seized:['изъят','er'],lost:['списан','n']}[d.status]||['закрыт','n'];return `<button class=row onclick="go('deal','${d.id}')"><span class="av t-${s[1]}">${esc(ini(nm(d.client)))}</span><span class=tx><b>${esc(nm(d.client))}</b><span>${esc(bk(d.bike))}</span></span><span class=rt>${chip(s[0],s[1])}</span></button>`}).join('')+
-S.clients.filter(c=>c.archived).sort(newest).map(c=>findRow('user',c.name,c.phone,'fClient',c.id,['В архиве','n'])).join('')+
-S.bikes.filter(b=>b.archived&&!S.deals.some(d=>d.bike==b.id)&&hit(b.name)).map(b=>`<button class=row onclick="go('bikeView','${b.id}')"><span class="gl t-n">${ic('bike')}</span><span class=tx><b>${esc(b.name)}</b><span>${esc(b.vin||'')}</span></span><span class=rt>${chip(b.wo?'списан':'в архиве',b.wo?'er':'n')}</span></button>`).join('');
-return l?`<div class=grp>${l}</div>`:empty('base',qs?'Ничего не найдено':'Здесь пока пусто')}
+function archiveList(){
+    const clients=S.clients.filter(c=>c.archived&&!c.erased).sort(newest);
+    const bikes=S.bikes.filter(b=>b.archived&&!b.erased).sort(newest);
+    const deals=S.deals.filter(d=>d.status!='active').sort(newest);
+    const dealStatus={archived:['Выкуплен','ok'],seized:['Возвращён','er'],lost:['Списан','n']};
+    return baseSection('Клиенты',clients.map(c=>findRow('user',c.name,c.phone,'fClient',c.id,['В архиве','n'])))+
+        baseSection('Велосипеды',bikes.map(b=>findRow('bike',b.name,b.vin,'bikeView',b.id,bikeStatus(b))))+
+        baseSection('Закрытые выкупы',deals.map(d=>findRow('doc',nm(d.client),[bk(d.bike),d.contract&&`договор ${d.contract}`].filter(Boolean).join(' · '),'deal',d.id,dealStatus[d.status]||['Закрыт','n'])))||empty('base','Здесь пока пусто');
+}
+function baseList(){
+    if(qs.trim())return searchBase();
+    if(tab=='bikes')return baseBikeGroups();
+    if(tab=='arch')return archiveList();
+    const rows=S.clients.filter(c=>!c.archived).sort(newest).map(c=>{const d=dealOf('client',c.id);return `<button class=row onclick="${d?`go('deal','${d.id}')`:`go('fClient','${c.id}')`}">${d?mini(d,c.name):`<span class="av t-n">${esc(ini(c.name))}</span>`}<span class=tx><b>${esc(c.name)}</b><span>${esc(c.phone||'')}</span></span><span class=rt>${d?chip(tag(d),cls(d)):chip('без выкупа')}</span></button>`});
+    return rows.length?`<div class=grp>${rows.join('')}</div>`:empty('base','Здесь пока пусто');
+}
 function base(){const under=act().length,free=S.bikes.filter(bikeReady).length;return `<div class=hd><h1>База</h1>${can('pay')?`<button class="btn sec sm" onclick="go('statementS')">Сверка СБП</button>`:''}</div><div class=stt><div><b>${under}</b><span>под выкупом</span></div><div><b>${free}</b><span>готово к выдаче</span></div></div>${seg('bt',['Клиенты','Велосипеды','Архив'],{clients:'Клиенты',bikes:'Велосипеды',arch:'Архив'}[tab])}<div class=srch>${ic('search')}<input id=q type=search aria-label="Общий поиск" placeholder="Имя, телефон, договор или VIN" value="${esc(qs)}" oninput="qs=this.value;$('#bl').innerHTML=baseList()"></div><div id=bl>${baseList()}</div>`}
 document.addEventListener('click',e=>{const b=e.target.closest('#bt button');if(b){tab={Клиенты:'clients',Велосипеды:'bikes',Архив:'arch'}[b.textContent];$('#bl').innerHTML=baseList()}});
 const add=()=>`<div class=hd><h1>Добавить</h1></div><div class=grp>${[['clients','user','Клиента','Имя, телефон, ссылка для входа','fClient'],['bikes','bike','Велосипед','Название, VIN, закупка, фото','fBike'],['deals','doc','Выкуп','Клиент, велосипед, срок, взнос','fDeal']].filter(x=>can(x[0])).map(x=>`<button class=row onclick="go('${x[4]}')"><span class="gl">${ic(x[1])}</span><span class=tx><b>${x[2]}</b><span>${x[3]}</span></span>${ic('right')}</button>`).join('')}</div>`;
 /* ---------- client form */
 const fld=(l,id,val,a)=>`<label class=fld><span>${l}</span><input id=${id} value="${esc(val)}" ${a||''}></label>`;
 function fClient(id){const c=S.clients.find(x=>x.id==id)||{},ro=!can('clients')?'disabled':'';
-return `${backBtn()}<div class=hd><h1>${id?'Клиент':'Новый клиент'}</h1></div><div class=form>${fld('ФИО','n',c.name,ro)}${fld('Основной телефон','p1',c.phone,'type=tel '+ro)}${fld('Telegram (@ник, по желанию)','tg',c.tg,ro)}<label class=fld><span>Другие телефоны (номер и подпись, по одному на строке)</span><textarea id=ph rows=3 ${ro}>${esc(c.phones)}</textarea></label>${fld('Комментарий','cm',c.comment,ro)}
+if(id&&(!c.id||c.erased))return backBtn()+empty('user','Карточка клиента удалена');
+return `${backBtn()}<div class=hd><div>${c.archived?'<small>В архиве</small>':''}<h1>${id?'Клиент':'Новый клиент'}</h1></div></div><div class=form>${fld('ФИО','n',c.name,ro)}${fld('Основной телефон','p1',c.phone,'type=tel '+ro)}${fld('Telegram (@ник, по желанию)','tg',c.tg,ro)}<label class=fld><span>Другие телефоны (номер и подпись, по одному на строке)</span><textarea id=ph rows=3 ${ro}>${esc(c.phones)}</textarea></label>${fld('Комментарий','cm',c.comment,ro)}
 ${ro?'':`<div class=acts><button class="btn blk" onclick="saveC('${c.id||''}')">Сохранить</button></div>`}
-${c.id&&!ro?`<div class=acts>${invBtns(c.id)}</div><div class=acts>${c.archived?`<button class="btn sec" onclick="restoreClient('${c.id}')">${ic('users','s')}Вернуть из архива</button>`:`<button class="btn dng" onclick="arc('client','${c.id}')">${ic('box','s')}В архив</button>`}</div>`:''}${c.id?`<p class="sub" style="margin:8px 4px">Добавлен: ${c.created?fmt(c.created.slice(0,10)):'—'}</p>`:''}</div>`}
+${c.id&&!ro?`<div class=acts>${invBtns(c.id)}</div><div class=acts>${c.archived?`<button class="btn sec" onclick="restoreClient('${c.id}')">${ic('users','s')}Вернуть из архива</button>`:`<button class="btn dng" onclick="arc('client','${c.id}')">${ic('box','s')}В архив</button>`}</div>`:''}${archiveDeleteButton('client',c)}${c.id?`<p class="sub" style="margin:8px 4px">Добавлен: ${c.created?fmt(c.created.slice(0,10)):'—'}</p>`:''}</div>`}
 async function saveC(id){if(!v('#n').trim()||!v('#p1').trim())return uiAlert('Введите ФИО и основной телефон');const o=S.clients.find(x=>x.id==id)||{};await put('client',{...o,id:id||undefined,name:v('#n').trim(),phone:v('#p1').trim(),tg:v('#tg').trim(),phones:v('#ph'),comment:v('#cm')});hap('success');toast('Клиент сохранён');nav('base')}
 async function arc(k,id){if(!await uiConfirm('Перевести в архив?'+(k=='bike'?' Фото будут удалены безвозвратно.':''),'В архив',{danger:true}))return;const o=S[k+'s'].find(x=>x.id==id);o.archived=true;if(k=='bike')o.photos=[];await put(k,o);nav('base')}
 async function restoreClient(id){
     const c=S.clients.find(x=>x.id==id);if(!c?.archived)return;
     await put('client',{...c,archived:false});toast('Карточка клиента восстановлена');tab='clients';nav('base');
+}
+const archiveDeleteButton=(kind,card)=>isOwner()&&card.archived&&!card.erased?`<div class=acts><button class="btn dng blk" onclick="deleteArchiveCard('${kind}','${card.id}')">${ic('trash','s')}Удалить ${kind=='client'?'клиента':'велосипед'} навсегда</button></div>`:'';
+async function deleteArchiveCard(kind,id){
+    const card=(kind=='client'?S.clients:S.bikes).find(item=>item.id==id);
+    if(!isOwner()||!card?.archived||card.erased)return;
+    const linked=S.deals.filter(d=>d[kind]==id||(kind=='bike'&&(d.swaps||[]).some(s=>s.from==id||s.to==id)));
+    if(linked.some(d=>d.status=='active'))return uiAlert('Карточка связана с действующим выкупом. Сначала закройте выкуп.');
+    const detail=kind=='client'?'Имя, контакты и доступ в Telegram будут удалены. Старые ссылки и QR для входа перестанут действовать.':
+        'Название, VIN, фото и другие данные карточки будут удалены.';
+    const history='Закрытые выкупы и суммы в отчётах сохранятся. В истории будет указано, что карточка удалена.';
+    if(!await uiConfirm(`${card.name}\n\n${detail}\n\n${history}`,'Удалить навсегда',{title:'Удалить карточку?',danger:true}))return;
+    try{
+        const result=await api('/api/del',{kind,id,version:card._v||0,deals:linked.map(d=>d.id).sort()});
+        await load(true);tab='arch';qs='';nav('base');hap('success');toast(result.deleted?'Карточка удалена':'Карточка уже удалена');
+    }catch(error){
+        if(error=='conflict'){
+            await load(true);tab='arch';qs='';nav('base');return uiAlert('Данные изменились. Откройте карточку заново.');
+        }
+        uiAlert(error.message||error);
+    }
 }
 /* ---------- bike form */
 function imgz(file){
@@ -506,11 +575,23 @@ async function addPh(el){
     }finally{photoUpload=false;el.disabled=false;el.value=''}
 }
 function fBike(id){const b=S.bikes.find(x=>x.id==id)||{},ro=!can('bikes')?'disabled':'';
-return `${backBtn()}<div class=hd><h1>${id?'Велосипед':'Новый велосипед'}</h1></div>${bikePreparation(b)}<div class=form>${fld('Название','n',b.name,ro)}${fld('VIN','vin',b.vin,ro)}${fld('Стоимость закупки, ₽','co',b.cost,'type=number inputmode=numeric '+ro)}${fld('SIM-карта трекера','sim',b.sim,ro)}<label class=fld><span>Комментарий</span><textarea id=cm rows=3 ${ro}>${esc(b.comment)}</textarea></label>
+if(id&&(!b.id||b.erased))return backBtn()+empty('bike','Карточка велосипеда удалена');
+return `${backBtn()}<div class=hd><h1>${id?'Велосипед':'Новый велосипед'}</h1></div>${bikePreparation(b)}<div class=form>${fld('Название','n',b.name,ro)}
+<div class=f2><label class=fld><span>Модель</span><select id=bike-model ${ro}><option value="">Выберите модель</option>${modelOptions(b.model)}</select></label>
+<label class=fld><span>Аккумуляторы</span><select id=bike-batteries ${ro}>${batteryOptions(b.batteries??1)}</select></label></div>
+${fld('VIN','vin',b.vin,ro)}${fld('Стоимость закупки, ₽','co',b.cost,'type=number inputmode=numeric '+ro)}${fld('SIM-карта трекера','sim',b.sim,ro)}<label class=fld><span>Комментарий</span><textarea id=cm rows=3 ${ro}>${esc(b.comment)}</textarea></label>
 ${ro?'':`<label class=fld><span>Фото (до 4, удаляются навсегда при переводе в архив)</span></label><label class="btn sec">${ic('up','s')}Добавить фото<input type=file accept="image/*" multiple hidden onchange="addPh(this)"></label><div id=th>${thumbs()}</div>
 <div class=acts><button class="btn blk" onclick="saveB('${b.id||''}')">Сохранить</button></div>`}
 ${b.id&&!ro?`<div class=acts><button class="btn sec" onclick="go('expS','${b.id}')">${ic('receipt','s')}Расходы</button><button class="btn sec" onclick="go('woS','${b.id}')">${ic('x','s')}Списать</button></div><div class=acts><button class="btn dng" onclick="arc('bike','${b.id}')">${ic('box','s')}В архив</button></div>`:''}</div>`}
-async function saveB(id){if(photoUpload)return uiAlert('Дождитесь обработки фотографии.');if(!v('#n').trim()||!(+v('#co')>0))return uiAlert('Введите название и закупку');const o=S.bikes.find(x=>x.id==id)||{};await put('bike',{...o,id:id||undefined,name:v('#n').trim(),vin:v('#vin'),cost:+v('#co'),sim:v('#sim'),comment:v('#cm'),photos:ph});hap('success');toast('Велосипед сохранён');tab='bikes';nav('base')}
+async function saveB(id){
+    if(photoUpload)return uiAlert('Дождитесь обработки фотографии.');
+    if(!v('#n').trim()||!(+v('#co')>0))return uiAlert('Введите название и закупку.');
+    const model=v('#bike-model');
+    if(!modelName(model))return uiAlert('Выберите модель велосипеда.');
+    const o=S.bikes.find(x=>x.id==id)||{};
+    await put('bike',{...o,id:id||undefined,name:v('#n').trim(),model,batteries:+v('#bike-batteries'),vin:v('#vin'),cost:+v('#co'),sim:v('#sim'),comment:v('#cm'),photos:ph});
+    hap('success');toast('Велосипед сохранён');tab='bikes';nav('base');
+}
 function bikePreparation(b){
     if(!b.id||b.archived||dealOf('bike',b.id))return '';
     const p=b.preparation||{},status=PREP[p.status]||PREP.ready;
@@ -524,23 +605,64 @@ async function editPreparation(id){
     try{await api('/api/bike-preparation',{bike:id,status,version:b._v||0});await load();toast(label)}catch(error){uiAlert(error.message||error)}
 }
 /* ---------- new deal */
-const dsTxt=()=>(S.cfg.ds||[[30000,2],[50000,4]]).map(x=>x[0].toLocaleString('ru')+' → '+x[1]).join(', ');
-function fDeal(){const cl=S.clients.filter(c=>!c.archived&&!dealOf('client',c.id)),bl=S.bikes.filter(bikeReady);
-return `${backBtn()}<div class=hd><h1>Новый выкуп</h1></div><div class=form><label class=fld><span>Клиент</span><select id=c onchange=updD()>${cl.map(c=>`<option value=${c.id}>${esc(c.name)}`).join('')}</select></label><label class=fld><span>Велосипед</span><select id=b onchange=updD()>${bl.map(b=>`<option value=${b.id}>${esc(b.name)}`).join('')}</select></label><label class=fld><span>Срок</span><select id=n onchange=updD()></select></label>
-<div class=f2><label class=fld><span>Взнос, ₽</span><input id=dn type=number inputmode=numeric oninput=updD()></label><label class=fld><span>Скидка, п.п.</span><input id=ds type=number inputmode=decimal oninput=updD() placeholder="авто"></label></div><p class=sub style="margin:6px 4px 0">Скидка за взнос считается сама: ${dsTxt()}. Впишите число, чтобы задать свою.</p>
-<div class=f2>${fld('Номер договора','ct')}<label class=fld><span>Дата оформления</span><input id=s type=date max="${C.today()}" value="${C.today()}"></label></div><label class=fld><span>Второй аккумулятор: закупка, ₽ (если берёт)</span><input id=ec type=number inputmode=numeric oninput=updD()></label>
-<label class=fld><span>Способ оплаты первого периода</span></label>${seg('m',['наличные','СБП','перевод'],null,'in')}<div id=pv class=pv></div><div class=acts><button class="btn blk lg" onclick=saveDeal()>Создать выкуп</button></div></div>`}
-function termOpts(){const mk=S.cfg.mk||C.MK;$('#n').innerHTML=Object.keys(mk.w).map(n=>`<option value=${n}>${n} нед., наценка ${mk.w[n]}%</option>`).join('')}
-function dealIn(){const b=S.bikes.find(x=>x.id==v('#b'));if(!b||!v('#c'))return;const ec=+v('#ec');return{cost:b.cost,type:'w',n:+v('#n'),down:+v('#dn')||0,disc:v('#ds'),mk:S.cfg.mk,tax:S.cfg.tax,acq:S.cfg.acq,receipt:S.cfg.receipt,ds:S.cfg.ds,extras:ec?[{name:'Второй аккумулятор',cost:ec,price:Math.round(ec*(1+(S.cfg.exm==null?24:S.cfg.exm)/100))}]:[]}}
-const res=r=>`<div class=mu>Платёж в неделю</div><div class=big>${m(r.pay)}</div>${kv('Цена для клиента',m(r.total))}${kv('Остаток после взноса',m(r.bal))}${kv('Последний платёж',m(r.last))}${kv(`Налог ${S.cfg.tax==null?7:S.cfg.tax}%`,m(r.tax))}${r.acq?kv(`Эквайринг ${pc(AQ())}%`,m(r.acq)):''}${r.receipt?kv('Формирование чеков',m(r.receipt)):''}${kv('Прибыль',`${m(r.profit)} (${r.pct.toFixed(0)}%)`)}${r.pct<25?`<div class="note t-er" style="margin:12px 0 0">${ic('alert')}<div><b>Прибыль ниже 25%</b></div></div>`:''}`;
-function updD(){const o=dealIn();$('#pv').innerHTML=o?res(C.calc(o)):'Нет свободных клиентов или велосипедов. Сначала добавьте их.'}
+function fDeal(){
+    const clients=S.clients.filter(c=>!c.archived&&!dealOf('client',c.id)),bikes=S.bikes.filter(bikeReady);
+    return `${backBtn()}<div class=hd><h1>Новый выкуп</h1></div><div class=form>
+        <label class=fld><span>Клиент</span><select id=c onchange=updD()>${clients.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
+        <label class=fld><span>Велосипед</span><select id=b onchange="termOpts();updD()">${bikes.map(b=>`<option value="${b.id}">${esc(b.name)}${modelName(b.model)?' · '+configurationName(b.model,b.batteries):''}</option>`).join('')}</select></label>
+        <label class=fld><span>Срок</span><select id=n onchange=updD()></select></label>
+        <label class=fld><span>Первоначальный взнос, ₽</span><input id=dn type=number min=0 step=0.01 inputmode=decimal oninput=updD()></label>
+        <div class=f2>${fld('Номер договора','ct')}<label class=fld><span>Дата оформления</span><input id=s type=date max="${C.today()}" value="${C.today()}"></label></div>
+        <label class=fld><span>Способ оплаты при выдаче</span></label>${seg('m',['наличные','СБП','перевод'],null,'in')}
+        <div id=pv class=pv></div><div class=acts><button class="btn blk lg" id=create-buyout onclick=saveDeal()>Создать выкуп</button></div></div>`;
+}
+const chosenBike=()=>S.bikes.find(bike=>bike.id==v('#b'));
+function termOpts(){
+    const select=$('#n'),previous=+select.value,bike=chosenBike(),terms=tariffTerms(bike?.model,bike?.batteries);
+    select.innerHTML=terms.map(({weeks,weekly})=>`<option value="${weeks}">${weeks} ${plur(weeks,'неделя','недели','недель')} · ${m(weekly)}/нед.</option>`).join('');
+    select.disabled=!terms.length;
+    if(terms.some(term=>term.weeks==previous))select.value=String(previous);
+}
+function dealIn(){
+    const bike=chosenBike(),weeks=+v('#n'),batteries=bike?.batteries??1,weekly=S.cfg.tariffs?.[C.tariffKey(bike?.model,batteries)]?.[weeks];
+    if(!bike||!v('#c')||!weekly)return null;
+    return {cost:bike.cost,type:'w',n:weeks,weekly,down:+v('#dn')||0,tax:S.cfg.tax,acq:S.cfg.acq,receipt:S.cfg.receipt,
+        tariff:{model:bike.model,batteries,weeks,weekly}};
+}
+function installmentProblem(result,down){
+    if(down<0||result.bal<0)return 'Первоначальный взнос должен быть от 0 до полной цены.';
+    if(result.bal>0&&result.pay<=0)return 'Остаток слишком мал для выбранного срока.';
+    return '';
+}
+const amountAtIssue=(result,down)=>C.money(C.minor(down)+C.minor(result.pay));
+function res(result,down){
+    return `<div class=mu>Платёж в неделю</div><div class=big>${m(result.pay)}</div>${kv('Полная цена выкупа',m(result.total))}
+        ${kv('К оплате при выдаче',m(amountAtIssue(result,down)))}${down?kv('Из них первоначальный взнос',m(down)):''}${kv('Последний платёж',m(result.last))}
+        ${kv('Плановый налог',m(result.tax))}${result.acq?kv('Эквайринг',m(result.acq)):''}${result.receipt?kv('Формирование чеков',m(result.receipt)):''}
+        ${kv('Плановая прибыль',m(result.profit))}`;
+}
+function updD(){
+    const bike=chosenBike(),input=dealIn(),result=input&&C.calc(input),preview=$('#pv');
+    const issue=!bike||!v('#c')?'Нужны свободные клиент и велосипед.':!modelName(bike.model)?'Укажите модель в карточке велосипеда.':
+        !input?'Задайте платёж для этой комплектации в разделе «Тарифы выкупа».':
+        !$('#dn').checkValidity()?'Введите сумму с точностью до копейки.':installmentProblem(result,input.down);
+    $('#create-buyout').disabled=!!issue;
+    preview.innerHTML=issue?`<p class=mu>${esc(issue)}</p>${bike&&!modelName(bike.model)&&can('bikes')?`<button class="btn sec blk" onclick="go('fBike','${bike.id}')">Открыть карточку велосипеда</button>`:''}`:res(result,input.down);
+}
 async function saveDeal(){
-const o=dealIn();if(!o)return uiAlert('Нужны клиент и велосипед');
-const r=C.calc(o),date=v('#s');
-if(!date||date>C.today())return uiAlert('Укажите дату фактической выдачи. Дата должна быть сегодня или раньше.');
-if(o.down<0||r.bal<0)return uiAlert('Проверьте первоначальный взнос: от 0 до цены выкупа.');
-if(r.bal>0&&(!(r.last>0)||(o.n>1&&!(r.pay>0))))return uiAlert('Остаток слишком мал для выбранного количества взносов. Уменьшите первоначальный взнос или оплатите всю цену.');
-await put('deal',{client:v('#c'),bike:v('#b'),type:'w',n:o.n,start:v('#s'),down:o.down,down_method:segVal('#m'),disc:r.d,mk:r.mk,cost:o.cost,pay:r.pay,last:r.last,total:r.total,tax:r.tax,acq:r.acq,receipt:r.receipt,extras:o.extras,contract:v('#ct'),pen:S.cfg.pen==null?0.9:S.cfg.pen,early:[],status:'active',paid:r.bal?{1:{date,amt:o.n==1?r.last:r.pay,pen:0,method:segVal('#m')}}:{}});hap('success');toast('Выкуп оформлен');nav('home')}
+    const input=dealIn(),date=v('#s'),button=$('#create-buyout');
+    if(!input||button.disabled)return;
+    if(!date||date>C.today())return uiAlert('Укажите дату фактической выдачи. Дата должна быть сегодня или раньше.');
+    const result=C.calc(input),method=segVal('#m');
+    button.disabled=true;
+    try{
+        await put('deal',{client:v('#c'),bike:v('#b'),type:'w',n:input.n,start:date,down:input.down,down_method:method,tariff:input.tariff,cost:input.cost,
+            pay:result.pay,last:result.last,total:result.total,tax:result.tax,acq:result.acq,receipt:result.receipt,
+            contract:v('#ct'),pen:S.cfg.pen??0.9,early:[],status:'active',paid:result.bal?{1:{date,amt:result.pay,pen:0,method}}:{}});
+        hap('success');toast('Выкуп оформлен');nav('home');
+    }finally{button.disabled=false}
+}
+
 /* ---------- deal screen */
 const EXP=b=>((b&&b.exp)||[]).reduce((a,e)=>a+e.amt,0),TX=()=>S.cfg.tax==null?7:S.cfg.tax,AQ=()=>S.cfg.acq||0,RC=()=>S.cfg.receipt||0,pc=x=>(+x).toLocaleString('ru'),exc=d=>(d.extras||[]).reduce((a,e)=>a+e.cost,0);
 function deal(id){const d=S.deals.find(x=>x.id==id),c=S.clients.find(x=>x.id==d.client)||{},b=S.bikes.find(x=>x.id==d.bike)||{},I=info(d),on=d.status=='active',k=I.sc.length-I.un.length,t=C.today();
@@ -553,7 +675,7 @@ npn=on&&C.nopen(d)?`<div class="note t-wa">${ic('shield')}<div><b>Неустой
 const wheelH=whw(states(d),{size:136,sw:12,round:true,gap:3,an:true},`<span class=k style="font-size:36px">${k}</span><small>из ${I.sc.length}</small>`);
 return `${backBtn()}<div class=dh><h1>${esc(c.name)}</h1><div class=ph>${esc(c.phone)}</div><div class="mu sm">${esc(b.name||'—')}, договор ${esc(d.contract||'—')} от ${fmt(d.start)}${c.phones?'<br>'+esc(c.phones).replace(/\n/g,'<br>'):''}</div>
 ${on&&(I.x||I.g)&&can('pay')||actions.length?`<div class=acts>${on&&(I.x||I.g)&&can('pay')?`<button class="btn go" onclick="${I.x?`paymentOptions('${d.id}',true)`:`go('debtS','${d.id}')`}">${ic('check','s')}Принять оплату</button>`:''}${actions.length?`<button class="btn sec" onclick="dealMenu('${d.id}')">${ic('list','s')}Действия</button>`:''}</div>`:''}
-<div class=acts><a class="btn sec" href="tel:${esc(c.phone)}">${ic('phone','s')}Позвонить</a>${c.tg?`<a class="btn sec" href="https://t.me/${esc(c.tg.replace('@',''))}">${ic('send','s')}Написать</a>`:''}<button class="btn sec" onclick="messageTemplates('${d.id}')">${ic('copy','s')}Шаблоны</button></div></div>
+${c.erased?'':`<div class=acts><a class="btn sec" href="tel:${esc(c.phone)}">${ic('phone','s')}Позвонить</a>${c.tg?`<a class="btn sec" href="https://t.me/${esc(c.tg.replace('@',''))}">${ic('send','s')}Написать</a>`:''}<button class="btn sec" onclick="messageTemplates('${d.id}')">${ic('copy','s')}Шаблоны</button></div>`}</div>
 ${d.private_note?`<div class=card><b>Закреплённая заметка</b><p class=block-copy>${esc(d.private_note.text)}</p><div class="sm mu">${esc(d.private_note.by)} · ${fmt(d.private_note.date)}</div></div>`:''}
 <div class=card><div class=pg>${wheelH}<div class=nx><div style="margin-bottom:8px">${chip(stt[0],stt[1])}</div>${on&&I.x?(I.od.length?`<button class=owb onclick="oweSheet('${d.id}')"><div class=mu>К оплате сейчас</div><div class=mid>${m(I.owe)}</div><div class=mu>${oweSub(I)}${ic('right','s')}</div></button>`:`<div class=mu>Следующий платёж</div><div class=mid>${m(I.x.amt)}</div><div class=mu>до ${fmt(C.deadline(d,I.x))}</div>`):on&&g?`<div class=mu>Остался долг</div><div class=mid>${m(g.total)}</div><div class=mu>${g.over?'срок прошёл':`до ${fmt(g.due)}`}</div>`:`<div class=mid>${on?'Ждёт подписания документов':'Выкуп закрыт'}</div>${d.closed?`<div class=mu>${fmt(d.closed)}</div>`:''}`}</div></div></div>
 ${I.od.length&&on?`<div class="note t-er">${ic('alert')}<div><b>Просрочка.</b> Неустойка сейчас: ${m(I.pen)}</div></div>`:''}${npn}${dcard}${dealRequests(d)}${dealPaymentReports(d.id)}${on?openBills(d.id).map(b=>billCard(d,b)).join(''):''}
@@ -574,7 +696,7 @@ function dealActions(d,I=info(d)){
         if(I.od.length||I.g||C.nopen(d))schedule.push(['shield',C.nopen(d)?'Начислять неустойку снова':'Не начислять неустойку',()=>noPen(id)]);
     }
     if(on&&can('deals')&&C.changeable(d,C.today()).length)schedule.push(['cal','Изменить график вручную',()=>manualSchedule(id)]);
-    if(can('clients')){
+    if(can('clients')&&!S.clients.find(c=>c.id==client)?.erased){
         customer.push(['edit','Изменить клиента',()=>go('fClient',client)]);
         if(on)customer.push(['receipt','QR для входа',()=>loginQR(client)],['link','Ссылка для входа',()=>invite(client)],['lock','Сбросить доступ',()=>unbind(client)]);
     }
@@ -657,13 +779,173 @@ async function fin(id,st){
     }catch(error){uiAlert(error.message||error)}
 }
 /* ---------- calculator */
-const calcS=()=>`${backBtn()}<div class=hd><h1>Калькулятор</h1></div><div class=form><label class=fld><span>Закупка велосипеда, ₽</span><input id=k type=number inputmode=numeric oninput=updC()></label><label class=fld><span>Первоначальный взнос, ₽</span><input id=d2 type=number inputmode=numeric oninput=updC()></label></div><div id=tb></div>`;
-function updC(){const cost=+v('#k'),mk=S.cfg.mk||C.MK;$('#tb').innerHTML=!cost?'':Object.keys(mk.w).map(n=>{const r=C.calc({cost,type:'w',n:+n,down:+v('#d2')||0,mk:S.cfg.mk,tax:S.cfg.tax,acq:S.cfg.acq,receipt:S.cfg.receipt,ds:S.cfg.ds});return `<div class="card ${r.pct<25?'t-er':''}"><div style="display:flex;justify-content:space-between;align-items:baseline"><b>${n} недель</b><span class=mid>${m(r.pay)}</span></div>${kv('Последний платёж',m(r.last))}${kv('Цена',m(r.total))}${kv('Налог',m(r.tax))}${r.acq?kv('Эквайринг',m(r.acq)):''}${r.receipt?kv('Формирование чеков',m(r.receipt)):''}${kv('Прибыль',`${m(r.profit)} (${r.pct.toFixed(0)}%)`)}</div>`}).join('')}
+let calculatorModel='',calculatorBatteries=1,calculatorDown='';
+function calcS(){
+    if(!calculatorModel){
+        const configuration=configurations.find(({model,batteries})=>tariffTerms(model,batteries).length)||configurations[0];
+        calculatorModel=configuration.model;calculatorBatteries=configuration.batteries;
+    }
+    return `${backBtn()}<div class=hd><h1>Расчёт для клиента</h1></div><div class=form>
+        <div class=f2><label class=fld><span>Модель</span><select id=tariff-model onchange="calculatorModel=this.value;render(true)">${modelOptions(calculatorModel)}</select></label>
+        <label class=fld><span>Аккумуляторы</span><select id=tariff-batteries onchange="calculatorBatteries=+this.value;render(true)">${batteryOptions(calculatorBatteries)}</select></label></div>
+        <label class=fld><span>Первоначальный взнос, ₽</span>
+            <input id=d2 type=number min=0 step=0.01 inputmode=decimal value="${esc(calculatorDown)}" oninput=updC()></label>
+        <p class=sub>Первоначальный взнос можно добавить по договорённости. Он входит в цену выкупа и уменьшает платежи по графику.</p>
+        </div><div id=tb></div>`;
+}
+const calculatorOffers=(model,down,batteries=1)=>tariffTerms(model,batteries).map(({weeks,weekly})=>{
+    const result=C.calc({type:'w',n:weeks,weekly,down});
+    return {weeks,result,problem:installmentProblem(result,down)};
+});
+function updC(){
+    const model=v('#tariff-model'),batteries=+v('#tariff-batteries'),field=$('#d2'),down=+field.value||0;
+    const box=$('#tb'),name=configurationName(model,batteries),offers=calculatorOffers(model,down,batteries);
+    calculatorDown=field.value;
+    if(!field.checkValidity()){box.innerHTML='<div class=card>Введите первоначальный взнос с точностью до копейки.</div>';return}
+    if(!offers.length){
+        box.innerHTML=`<div class=card>Для комплектации «${name}» пока нет тарифов.</div>`;
+        return;
+    }
+    const rows=offers.map(({weeks,result,problem})=>{
+        const weekly=problem||!result.bal?'—':m(result.pay)+(result.last==result.pay?'':`<br><small class=mu>Последний ${m(result.last)}</small>`);
+        return `<tr><th scope=row>${weeks} нед.</th><td>${weekly}</td>
+            ${down?`<td>${problem?'—':m(amountAtIssue(result,down))}</td>`:''}
+            <td>${m(result.total)}</td><td>${problem?'<small>Проверьте взнос</small>':`<button class="btn sec sm" onclick="shareOffer(${weeks})">График</button>`}</td></tr>`;
+    }).join('');
+    const actions=offers.some(offer=>!offer.problem)?`<div class=acts>
+        <button class="btn blk" onclick="saveCalculatorImage(this)">${ic('down','s')}Скачать картинку</button>
+        <button class="btn sec blk" onclick="shareTariffTable()">Скопировать тарифы</button></div>`:'';
+    box.innerHTML=`<div class=card><b>Тарифы · ${name}</b><div class=table-scroll>
+        <table class=data-table><thead><tr><th scope=col>Срок</th><th scope=col>В неделю</th>${down?'<th scope=col>При выдаче</th>':''}
+        <th scope=col>Всего</th><th scope=col></th></tr></thead><tbody>${rows}</tbody></table></div>${actions}</div>`+
+        fold('Памятка для клиента',tariffMemo().map(line=>`<p class=sub>${esc(line)}</p>`).join(''));
+}
+function tariffMemo(){
+    const discount=S.cfg.multi_discount??1.5,minimum=DM();
+    return [
+        'Если вам удобно оплатить часть стоимости сразу, заранее согласуем первоначальный взнос. Он засчитывается в полную стоимость выкупа. Оставшуюся сумму делим на выбранное число недель. Чем больше взнос, тем меньше еженедельный платёж.',
+        'В день выдачи оплачиваются первоначальный взнос и первый платёж по графику. Даты остальных платежей указаны в графике. При полной оплате весь расчёт проходит в день выдачи.',
+        'Допустим, выкуп стоит 160 000 ₽, срок — 20 недель. Если вы внесёте 40 000 ₽, оставшиеся 120 000 ₽ распределятся на 20 платежей по 6 000 ₽. При выдаче понадобится 46 000 ₽. После выдачи останется 19 платежей по 6 000 ₽.',
+        ...(discount>0?[`При оплате двух и более ближайших взносов одним платежом действует скидка ${pc(discount)}% от внесённой суммы за эти взносы. Скидка уменьшает сумму к оплате с конца графика.`]:[]),
+        ...(minimum<100?[`Ближайший взнос можно оплатить частично. Минимальная сумма — ${pc(minimum)}% взноса. Срок доплаты будет указан в приложении.`]:[]),
+        'После полной оплаты приезжайте подписать документы и забрать второй комплект ключей.'
+    ];
+}
+function tariffTableText(model,down,batteries=1){
+    const offers=calculatorOffers(model,down,batteries).filter(offer=>!offer.problem);
+    const lines=offers.map(({weeks,result})=>{
+        const term=`${weeks} ${plur(weeks,'неделя','недели','недель')}`;
+        const payments=result.bal?` · ${m(result.pay)} в неделю${result.last!=result.pay?` · последний взнос ${m(result.last)}`:''}`:' · оплата полностью при выдаче';
+        return `${term}${payments}${down?` · при выдаче ${m(amountAtIssue(result,down))}`:''} · всего ${m(result.total)}`;
+    });
+    return [`Вольт Вояж · ${configurationName(model,batteries)}`,down?`Первоначальный взнос — ${m(down)}`:'Расчёт без первоначального взноса','',...lines,'','Памятка',...tariffMemo()].join('\n');
+}
+function shareTariffTable(){
+    const model=v('#tariff-model'),batteries=+v('#tariff-batteries'),down=+v('#d2')||0;
+    return copyTextSheet(`Тарифы · ${configurationName(model,batteries)}`,tariffTableText(model,down,batteries));
+}
+function sampleScheduleText(model,weeks,result,down,date,batteries=1){
+    const header=[`Вольт Вояж · ${configurationName(model,batteries)}`,
+        `${weeks} ${plur(weeks,'неделя','недели','недель')} · цена ${m(result.total)}`,
+        ...(down?[`Первоначальный взнос — ${m(down)}`]:[]),`К оплате при выдаче — ${m(amountAtIssue(result,down))}`];
+    const schedule=C.sched({type:'w',start:date,n:weeks,pay:result.pay,last:result.last});
+    const payments=schedule.length?schedule.map(row=>`${row.k}. ${fmt(row.due)} · ${m(row.amt)}`):
+        [`${fmt(date)} · полная оплата при выдаче`];
+    return [...header,'',...payments,'','Памятка',...tariffMemo(),'Даты уточним при оформлении.'].join('\n');
+}
+function shareOffer(weeks){
+    const model=v('#tariff-model'),batteries=+v('#tariff-batteries'),down=+v('#d2')||0;
+    const offer=calculatorOffers(model,down,batteries).find(item=>item.weeks==weeks);
+    if(!offer||offer.problem)return;
+    const today=C.today();
+    return copyTextSheet(`График · ${configurationName(model,batteries)}`,sampleScheduleText(model,weeks,offer.result,down,today,batteries),root=>{
+        const date=root.querySelector('[data-issue-date]'),field=root.querySelector('[data-message]'),download=root.querySelector('[data-schedule-image]');
+        date.oninput=()=>{if(date.value&&date.checkValidity())field.value=sampleScheduleText(model,weeks,offer.result,down,date.value,batteries)};
+        download.onclick=()=>{if(date.value&&date.checkValidity())return downloadTariffImage(download,model,down,offer,date.value,batteries);date.reportValidity()};
+    },`<label class=fld><span>Дата выдачи для примера</span><input data-issue-date type=date required value="${today}"></label>
+        <button class="btn sec blk" data-schedule-image>${ic('down','s')}Скачать картинку</button>`);
+}
+function saveCalculatorImage(button){
+    if(!$('#d2').checkValidity())return;
+    return downloadTariffImage(button,v('#tariff-model'),+v('#d2')||0,null,null,+v('#tariff-batteries'));
+}
+function tariffImageData(model,down,offer,date,batteries=1){
+    const downText=down?`Первоначальный взнос — ${m(down)}`:'Пример без первоначального взноса';
+    if(offer){
+        const {weeks,result}=offer,schedule=C.sched({type:'w',start:date,n:weeks,pay:result.pay,last:result.last});
+        return {title:`График · ${configurationName(model,batteries)}`,subtitle:`${weeks} нед. · полная стоимость ${m(result.total)}`,
+            details:[downText,`При выдаче ${fmt(date)} — ${m(amountAtIssue(result,down))}`],
+            labels:['Взнос','Дата','К оплате'],rows:schedule.length?schedule.map(row=>({cells:[String(row.k),fmt(row.due),m(row.amt)]})):
+                [{cells:['При выдаче',fmt(date),m(result.total)]}]};
+    }
+    const validOffers=calculatorOffers(model,down,batteries).filter(item=>!item.problem);
+    return {title:`Выкуп · ${configurationName(model,batteries)}`,subtitle:'Сроки и еженедельные платежи',details:[downText],
+        labels:['Срок','В неделю',...(down?['При выдаче']:[]),'Всего'],rows:validOffers.map(({weeks,result})=>({
+            cells:[`${weeks} нед.`,result.bal?m(result.pay):'—',...(down?[m(amountAtIssue(result,down))]:[]),m(result.total)],
+            last:result.bal&&result.last!=result.pay?`Последний ${m(result.last)}`:''}))};
+}
+function renderTariffPng(data,memo){
+    const canvas=document.createElement('canvas'),width=1080,inset=64,right=width-inset;
+    const ctx=canvas.getContext('2d'),available=right-inset,positions=data.labels.length==4?[inset+18,435,706,right-18]:[inset+18,665,right-18];
+    const ink='#172c30',muted='#486361',green='#237364',tint='#eff7f4',rule='#d9e7e2';
+    const font=(size,bold=false)=>`${bold?'700':'400'} ${size}px "DejaVu Sans", Arial, sans-serif`;
+    ctx.font=font(28);
+    const wrap=text=>{
+        const lines=[];let line='';
+        for(const word of text.split(' ')){
+            const next=line?`${line} ${word}`:word;
+            if(line&&ctx.measureText(next).width>available-66){lines.push(line);line=word}else line=next;
+        }
+        if(line)lines.push(line);return lines;
+    };
+    const notes=memo.map(wrap),rowHeight=data.rows.some(row=>row.last)?89:61,head=226+data.details.length*40;
+    const memoY=head+56+rowHeight*data.rows.length+36;
+    canvas.width=width;canvas.height=memoY+90+notes.reduce((sum,lines)=>sum+36*lines.length+15,0);
+    const fill=(color,x,y,w,h)=>{ctx.fillStyle=color;ctx.fillRect(x,y,w,h)};
+    const text=(value,x,y,size,{bold=false,color=ink,align='left'}={})=>{
+        ctx.font=font(size,bold);ctx.fillStyle=color;ctx.textAlign=align;ctx.fillText(value,x,y);
+    };
+    fill('#ffffff',0,0,width,canvas.height);
+    text('ВОЛЬТ ВОЯЖ',inset,67,23,{bold:true,color:green});
+    text(data.title,inset,142,54,{bold:true});
+    text(data.subtitle,inset,190,28,{color:muted});
+    data.details.forEach((line,index)=>text(line,inset,234+40*index,29,{bold:index===0}));
+    fill(tint,inset,head,available,56);
+    const drawCells=(cells,y,header)=>cells.forEach((label,column)=>text(label,positions[column],y,header?23:32,{
+        align:column?'right':'left',color:header?muted:ink,bold:header||column===cells.length-1}));
+    drawCells(data.labels,head+36,true);
+    data.rows.forEach((row,index)=>{
+        const y=head+56+index*rowHeight;
+        drawCells(row.cells,y+41,false);
+        if(row.last)text(row.last,positions[1],y+72,22,{color:muted,align:'right'});
+        fill(rule,inset,y+rowHeight-1,available,1);
+    });
+    fill(tint,inset,memoY,available,canvas.height-memoY-36);
+    text('Памятка',inset+18,memoY+42,29,{bold:true,color:green});
+    let y=memoY+82;
+    for(const note of notes){
+        text('•',inset+16,y,28,{color:green});
+        for(const line of note){text(line,inset+44,y,28);y+=36}
+        y+=15;
+    }
+    return canvas.toDataURL('image/png').split(',')[1];
+}
+async function downloadTariffImage(button,model,down,offer,date,batteries=1){
+    const data=tariffImageData(model,down,offer,date,batteries);
+    if(!data.rows.length)return;
+    button.disabled=true;
+    try{
+        const png=renderTariffPng(data,tariffMemo());
+        const file=await api('/api/tariff-image',{model,batteries,weeks:offer?.weeks,png});
+        downloadNamed(file);
+    }catch(error){uiAlert(error.message||error)}finally{button.disabled=false}
+}
+
 /* ---------- expenses */
-function expS(id){const b=S.bikes.find(x=>x.id==id)||{},l=(b.exp||[]).map((e,i)=>({e,i})).sort((x,y)=>x.e.date<y.e.date?1:-1),ro=!can('bikes');
+function expS(id){const b=S.bikes.find(x=>x.id==id)||{},l=(b.exp||[]).map((e,i)=>({e,i})).sort((x,y)=>x.e.date<y.e.date?1:-1),ro=!can('bikes')||b.erased;
 return `${backBtn()}<div class=hd><div><small>Расходы на обслуживание</small><h1>${esc(b.name)}</h1></div></div><div class=card><div class=mu>Всего потрачено</div><div class=big>${m(EXP(b))}</div></div>`+
 (ro?'':`<div class=form><label class=fld><span>Что сделано</span><input id=xt placeholder="Например, замена тормозных колодок"></label><div class=f2><label class=fld><span>Сумма, ₽</span><input id=xa type=number inputmode=numeric></label><label class=fld><span>Дата</span><input id=xd type=date value="${C.today()}"></label></div><div class=acts><button class="btn blk" onclick="addExp('${id}')">Добавить расход</button></div></div>`)+
-(l.length?`<h2 class=sec>История</h2><div class=grp>${l.map(({e,i})=>`<div class="row nl" style="cursor:default"><span class=tx><b>${m(e.amt)}</b><span>${fmt(e.date)}, ${esc(e.text)}</span></span>${ro?'':`<button class="btn sec sm" onclick="delExp('${id}',${i})">${ic('trash','s')}</button>`}</div>`).join('')}</div>`:empty('receipt','Расходов пока нет'))}
+(l.length?`<h2 class=sec>История</h2><div class=grp>${l.map(({e,i})=>`<div class="row nl" style="cursor:default"><span class=tx><b>${m(e.amt)}</b><span>${fmt(e.date)}${e.text?', '+esc(e.text):''}</span></span>${ro?'':`<button class="btn sec sm" onclick="delExp('${id}',${i})">${ic('trash','s')}</button>`}</div>`).join('')}</div>`:empty('receipt','Расходов пока нет'))}
 async function addExp(id){const b=S.bikes.find(x=>x.id==id),a=+v('#xa');if(!v('#xt').trim()||!(a>0)||!v('#xd'))return uiAlert('Введите, что сделано, сумму и дату');(b.exp=b.exp||[]).push({date:v('#xd'),text:v('#xt').trim(),amt:a});await put('bike',b);toast('Расход добавлен')}
 async function delExp(id,i){if(!await uiConfirm('Расход пропадёт из отчётов.','Удалить',{danger:true,title:'Удалить расход?'}))return;const b=S.bikes.find(x=>x.id==id);b.exp.splice(i,1);await put('bike',b)}
 /* ---------- write-off and replacement of a bike */
@@ -679,7 +961,12 @@ try{
     await api('/api/bike-writeoff',{bike:id,version:b._v||0,deal:d?.id||null,dealVersion:d?d._v||0:null,...wo});
     await load(true);hap('success');toast('Велосипед списан');nav('home');
 }catch(error){uiAlert(error.message||error)}}
-function bikeView(id){const b=S.bikes.find(x=>x.id==id)||{},w=b.wo;return `${backBtn()}<div class=hd><div><small>${w?'Списанный велосипед':'В архиве'}</small><h1>${esc(b.name)}</h1></div></div><div class=card>${kv('VIN',esc(b.vin||'—'))}${canFin()?kv('Закупка',m(b.cost||0))+kv('Расходы на обслуживание',m(EXP(b))):''}${w?kv('Дата списания',fmt(w.date))+kv('Причина',esc(w.reason))+(canFin()?kv('Убыток',m(w.loss)):'')+(w.note?kv('Комментарий',esc(w.note)):''):''}</div>${can('bikes')?`<div class=acts><button class="btn sec" onclick="go('expS','${id}')">${ic('receipt','s')}Расходы</button>${w?`<button class="btn sec" onclick="unWO('${id}')">${ic('swap','s')}Вернуть в парк</button>`:''}</div>`:''}`}
+function bikeView(id){
+    const b=S.bikes.find(x=>x.id==id);
+    if(!b||b.erased)return backBtn()+empty('bike','Карточка велосипеда удалена');
+    const w=b.wo;
+    return `${backBtn()}<div class=hd><div><small>${w?'Списанный велосипед':'В архиве'}</small><h1>${esc(b.name)}</h1></div></div><div class=card>${kv('VIN',esc(b.vin||'—'))}${canFin()?kv('Закупка',m(b.cost||0))+kv('Расходы на обслуживание',m(EXP(b))):''}${w?kv('Дата списания',fmt(w.date))+kv('Причина',esc(w.reason))+(canFin()?kv('Убыток',m(w.loss)):'')+(w.note?kv('Комментарий',esc(w.note)):''):''}</div>${can('bikes')?`<div class=acts><button class="btn sec" onclick="go('expS','${id}')">${ic('receipt','s')}Расходы</button>${w?`<button class="btn sec" onclick="unWO('${id}')">${ic('swap','s')}Вернуть в парк</button>`:''}</div>`:''}${archiveDeleteButton('bike',b)}`;
+}
 async function unWO(id){if(!await uiConfirm('Списание отменится, убыток уйдёт из отчётов. Закрытый выкуп останется закрытым.','Вернуть',{title:'Вернуть велосипед в парк?'}))return;const b=S.bikes.find(x=>x.id==id);delete b.wo;b.archived=false;await put('bike',b);toast('Велосипед в парке');nav('base')}
 function swapS(id){const d=S.deals.find(x=>x.id==id),fr=S.bikes.filter(bikeReady);
 return `${backBtn()}<div class=hd><div><small>${esc(nm(d.client))}</small><h1>Замена велосипеда</h1></div></div><div class=form><div class=card style="margin:0"><div class=mu>Сейчас у клиента</div><b style="font-size:19px">${esc(bk(d.bike))}</b></div>`+
@@ -813,7 +1100,7 @@ ${wl.length?`<div class=card><b>Списано за период</b>${wl.map(k=>
 <p class=sub>Эквайринг и чеки рассчитаны по ставкам, сохранённым при учёте платежа. Пометка «оценка» означает, что для старой оплаты взята ставка на день обновления приложения.</p>`}
 function terms(){const ds=S.deals.filter(d=>d.status!='seized'&&d.status!='lost'&&d.total),g={};ds.forEach(d=>{const n=d.original_n||d.n,p=d.total-d.cost-exc(d)-(d.tax||0)-(d.acq||0)-(d.receipt||0)-(d.bonuses||[]).reduce((sum,item)=>sum+item.amt,0),o=g[n]=g[n]||{n,c:0,p:0,k:0};o.c++;o.p+=p;o.k+=d.cost});
 const L=Object.values(g).map(o=>({...o,ap:o.p/o.c,pc:o.k?o.p/o.k*100:0})).sort((a,b)=>a.n-b.n),best=L.reduce((x,y)=>!x||y.pc>x.pc?y:x,null);
-return `<h2 class=sec>Выгодные сроки</h2>`+(L.length?`<div class=grp>${L.map(o=>`<div class="row nl wr" style="cursor:default"><span class="gl ${o===best?'t-ok':''}">${o===best&&L.length>1?ic('check'):o.n}</span><span class=tx><b>${o.n} недель</b><span>средняя прибыль ${m(o.ap)}, ${o.pc.toFixed(0)}% от закупки</span></span><span class=rt>${chip(`${o.c} из ${ds.length}`)}</span></div>`).join('')}</div>`:empty('chart','Пока нет выкупов'))+`<p class=sub>Плановая прибыль при полной выплате: цена − скидки − закупка − допы − налог − эквайринг − чеки. Изъятые и списанные не учитываются.</p>`}
+return fold('Выгодные сроки',(L.length?`<div class=grp>${L.map(o=>`<div class="row nl wr" style="cursor:default"><span class="gl ${o===best?'t-ok':''}">${o===best&&L.length>1?ic('check'):o.n}</span><span class=tx><b>${o.n} недель</b><span>средняя прибыль ${m(o.ap)}, ${o.pc.toFixed(0)}% от закупки</span></span><span class=rt>${chip(`${o.c} из ${ds.length}`)}</span></div>`).join('')}</div>`:empty('chart','Пока нет выкупов'))+`<p class=sub>Плановая прибыль при полной выплате: цена − скидки − закупка − допы − налог − эквайринг − чеки. Изъятые и списанные не учитываются.</p>`)}
 function disc(includeOpen=true){
     const by={};
     S.deals.forEach(d=>{
@@ -882,24 +1169,118 @@ const repA=()=>seasonality()+terms()+discH()+bikesH()+parkInvestments()+forecast
 /* ---------- settings */
 const admTone=a=>a.disabled?['отключён','n']:a.tg?['вошёл','ok']:['ждёт входа','wa'];
 const expandedSettings=new Set();
+let tariffConfiguration='';
+const tariffDrafts=new Map();
+const DEFAULT_PURCHASE_COSTS={u2:59000,[C.tariffKey('u2',2)]:85000};
+const MAX_BUYOUT_AMOUNT=10000000;
 function settingSection(key,title,body){
     return `<details class="card fold settings-menu" ${expandedSettings.has(key)?'open':''} ontoggle="if(this.isConnected)recordSettingSection('${key}',this.open)"><summary><b>${title}</b></summary>${body}</details>`;
 }
 function recordSettingSection(key,open){if(open)expandedSettings.add(key);else expandedSettings.delete(key)}
+function tariffForecast(weeks,weekly,cost){
+    const tax=TX(),acq=AQ(),receipt=RC();
+    const result=weekly?C.weeklyProfit({weekly,weeks,cost,tax,acq,receipt}):null;
+    const amount=field=>result?m(result[field]):'—';
+    const expenses=result?m(C.money(C.minor(result.gross)-C.minor(result.net))):'—';
+    const profit=cost?amount('profit'):'—';
+    const percent=result&&cost?`<small>${pc(Math.round(result.pct*100)/100)}% от закупки</small>`:'';
+    return `<dl class=tariff-totals>
+        <div><dt>Выручка</dt><dd>${amount('gross')}</dd></div>
+        <div><dt>Расходы</dt><dd>${expenses}</dd></div>
+        <div><dt>Чистая прибыль</dt><dd>${profit}${percent}</dd></div></dl>
+        ${result?`<dl class=tariff-fees>
+            <div><dt>Эквайринг · ${pc(acq)}%</dt><dd>${amount('acq')}</dd></div>
+            <div><dt>Чеки · ${pc(receipt)}%</dt><dd>${amount('receipt')}</dd></div>
+            <div><dt>Налог · ${pc(tax)}%</dt><dd>${amount('tax')}</dd></div></dl>
+            <p class=tariff-net><span>После комиссий и налога</span><b>${amount('net')}</b></p>`:''}`;
+}
+function tariffSettings({key,name}){
+    const draft=tariffDrafts.get(key),rates=S.cfg.tariffs?.[key]||{};
+    const cost=draft?.cost??S.cfg.purchaseCosts?.[key]??DEFAULT_PURCHASE_COSTS[key]??'';
+    const numberInput=`type=number step=0.01 min=0.01 max=${MAX_BUYOUT_AMOUNT} inputmode=decimal oninput="updateTariffForecast(this)"`;
+    const periods=C.WEEKLY_TERMS.map(weeks=>{
+        const weekly=draft?.rates[weeks]??rates[weeks]??'';
+        const term=`${weeks} ${plur(weeks,'неделя','недели','недель')}`;
+        return `<section class=card data-tariff-term>
+            <div class=tariff-rate><h2>${term}</h2><label class=fld><span>Взнос в неделю, ₽</span>
+                <input ${numberInput} value="${esc(weekly)}" data-tariff-key="${key}" data-weeks="${weeks}"
+                    aria-label="${name}, ${term}, взнос в неделю"></label></div>
+            <div data-tariff-forecast>${tariffForecast(weeks,+weekly,+cost)}</div></section>`;
+    }).join('');
+    return `<fieldset class=tariff-editor data-tariff-editor="${key}">
+        <div class=card>
+            <label class=fld><span>Модель и аккумуляторы</span><select id=tariff-configuration onchange="tariffConfiguration=this.value;render(true)">
+                ${configurations.map(item=>`<option value="${item.key}" ${key==item.key?'selected':''}>${item.name}</option>`).join('')}
+            </select></label>
+            <label class=fld><span>Закупка комплектации, ₽</span><input ${numberInput} value="${esc(cost)}" data-tariff-cost></label>
+            <p class="mu tariff-hint" data-tariff-hint ${+cost?'hidden':''}>Укажите закупку, чтобы увидеть чистую прибыль.</p>
+            <button type=button class="btn blk" onclick="saveTariffSettings(this)">Сохранить тарифы и закупку</button>
+        </div>
+        <p class=sub>Прогноз на весь срок при еженедельных оплатах по СБП до скидок. Сохранённые взносы появятся в расчёте для клиента.</p>
+        ${periods}
+        </fieldset>`;
+}
+function tariffsS(){
+    if(!isOwner())return backBtn()+empty('lock','Настройки тарифов доступны владельцу.');
+    const configuration=configurations.find(item=>item.key==tariffConfiguration)||
+        configurations.find(({model,batteries})=>tariffTerms(model,batteries).length)||configurations[0];
+    tariffConfiguration=configuration.key;
+    return `${backBtn()}<div class=hd><div><small>Настройки</small><h1>Тарифы выкупа</h1></div></div>${tariffSettings(configuration)}`;
+}
+function updateTariffForecast(input){
+    const editor=input.closest('[data-tariff-editor]'),key=editor.dataset.tariffEditor;
+    const cost=editor.querySelector('[data-tariff-cost]'),weeks=input.dataset.weeks;
+    if(input.checkValidity()){
+        const draft=tariffDrafts.get(key)||{rates:{}};
+        if(weeks)draft.rates[weeks]=input.value;
+        else draft.cost=input.value;
+        tariffDrafts.set(key,draft);
+    }
+    const purchase=cost.checkValidity()?+cost.value:0;
+    editor.querySelector('[data-tariff-hint]').hidden=purchase>0;
+    const payments=weeks?[input]:editor.querySelectorAll('[data-tariff-key]');
+    for(const payment of payments){
+        const weekly=payment.checkValidity()?+payment.value:0;
+        const container=payment.closest('[data-tariff-term]').querySelector('[data-tariff-forecast]');
+        container.innerHTML=tariffForecast(+payment.dataset.weeks,weekly,purchase);
+    }
+}
+async function saveTariffSettings(button){
+    if(!isOwner()||button.disabled)return;
+    const editor=button.closest('[data-tariff-editor]'),key=editor.dataset.tariffEditor;
+    const cost=editor.querySelector('[data-tariff-cost]'),fields=[...editor.querySelectorAll('[data-tariff-key]')];
+    if(!cost.checkValidity())return uiAlert('Проверьте стоимость закупки.');
+    if(fields.some(input=>!input.checkValidity()))return uiAlert('Проверьте суммы недельных взносов.');
+    const rates=Object.fromEntries(fields.filter(input=>input.value!=='').map(input=>[input.dataset.weeks,+input.value]));
+    const purchaseCosts={...S.cfg.purchaseCosts};
+    if(cost.value)purchaseCosts[key]=+cost.value;
+    else delete purchaseCosts[key];
+    const draft=tariffDrafts.get(key);
+    tariffDrafts.delete(key);
+    editor.disabled=true;
+    try{
+        await put('cfg',{...S.cfg,id:'cfg',tariffs:{...S.cfg.tariffs,[key]:rates},purchaseCosts});
+        hap('success');toast('Тарифы и закупка сохранены');
+    }catch(error){
+        if(draft&&!tariffDrafts.has(key))tariffDrafts.set(key,draft);
+        if(error!==ABORT)uiAlert(error.message||error);
+        else if(V[V.length-1][0]=='tariffsS')render(true);
+    }finally{
+        editor.disabled=false;
+    }
+}
 function set(){
-    const mk=S.cfg.mk||C.MK,ds=S.cfg.ds||[[30000,2],[50000,4]],pn=S.cfg.pen??0.9;
+    const pn=S.cfg.pen??0.9;
     const input=(id,label,value,min=0,max=100,step='any')=>`<label class=fld><span>${label}</span><input id=${id} type=number inputmode=decimal min=${min} max=${max} step=${step} value="${esc(value)}"></label>`;
     const form=(group,body)=>`<div class=form>${body}<div class=acts><button class="btn blk" onclick="saveSet('${group}')">Сохранить</button></div></div>`;
-    const tariffs=form('tariffs',`<h3>Наценка по срокам, %</h3>
-        <div class=f2>${Object.keys(mk.w).map(n=>`<label class=fld><span>${n} недель</span><input type=number inputmode=decimal data-n=${n} value="${esc(mk.w[n])}"></label>`).join('')}
-        ${input('exm','Допы (второй аккумулятор), %',S.cfg.exm??24)}</div>
-        <h3>Скидка за первоначальный взнос</h3><div class=f2>${ds.map(([amount,discount],index)=>input('da'+index,`Взнос ${index+1}, ₽`,amount,0,10000000)+input('db'+index,`Скидка ${index+1}, п.п.`,discount)).join('')}</div>`);
+    const tariffs=`<div class=grp><button type=button class=row onclick="go('tariffsS')"><span class=gl>${ic('calc')}</span>
+        <span class=tx><b>Тарифы выкупа</b><span>Еженедельный взнос, выручка и расходы</span></span>${ic('right')}</button></div>`;
     const payments=form('payments',`<div class=f2>${input('multi_discount','Скидка от двух платежей, %',S.cfg.multi_discount??1.5)}${input('pen','Неустойка, % в день',pn)}
         ${input('dd','Отсрочка, дней',S.cfg.dd??2,1,365,1)}${input('dmin','Минимальная частичная оплата, %',DM(),50,100,1)}
         ${input('dbd','Срок на остаток, дней',DB(),0,365,1)}</div>
         <p class=sub>Скидка от двух платежей уменьшает взносы с конца графика. Отсрочка действует на один взнос. Если уже есть долг по взносу, сначала его нужно погасить.</p>`);
     const fees=form('fees',`<div class=f2>${input('tax','Налог с выручки, %',TX())}${input('acq','Эквайринг по СБП, %',AQ())}${input('receipt','Чеки по СБП, %',RC())}</div>
-        <p class=sub>Расходы на банк и чеки считаются по ставке, сохранённой при оплате. В калькуляторе они оценены от всей цены выкупа.</p>`);
+        <p class=sub>Расходы на банк и чеки считаются по ставке, сохранённой при оплате. При оформлении плановые расходы считаются от полной цены выкупа.</p>`);
     const admins=`<div class=grp>${S.admins.map(a=>{const status=admTone(a);return `<button class=row onclick="go('fAdmin','${a.id}')"><span class="av t-${status[1]}">${esc(ini(a.name))}</span><span class=tx><b>${esc(a.name)}</b><span>${esc(a.phone)}</span></span><span class=rt>${chip(...status)}</span></button>`}).join('')}
         <button class="row nl" onclick="go('fAdmin')"><span class=gl>${ic('plus')}</span><span class=tx><b>Добавить администратора</b><span>Телефон, права, ссылка для входа</span></span></button></div>`;
     const messages=`<div class=grp><label class=sw><span class=tx><b>Сообщения вам</b><span>Сводка в 10:00, оплаты, входы и отсрочки</span></span><input type=checkbox ${S.cfg.nown?'checked':''} onchange="setNtf('nown',this)"></label>
@@ -910,8 +1291,8 @@ function set(){
         <button class="btn sec" onclick="$('#rf').click()">${ic('up','s')}Восстановить</button></div>
         <input id=rf type=file accept=".json,application/json" hidden onchange="restoreFile(this)"></div>`;
     const log=`<div class=grp><button class="row nl" onclick="go('logS')"><span class=gl>${ic('list')}</span><span class=tx><b>Открыть журнал действий</b><span>Кто и что менял</span></span>${ic('right')}</button></div>`;
-    return `<div class=hd><h1>Настройки</h1></div>`
-        +settingSection('tariffs','Тарифы и первоначальный взнос',tariffs)
+    return `<div class=hd><div><small>Версия 12</small><h1>Настройки</h1></div></div>`
+        +tariffs
         +settingSection('payments','Платежи, отсрочка и неустойка',payments)
         +settingSection('fees','Налог и комиссии',fees)
         +settingSection('bank','Оплата по QR · Точка',tchSec())
@@ -934,16 +1315,11 @@ if(v('#cphone').trim()&&!/^\+?\d{7,15}$/.test(phone))return uiAlert('Прове�
 await put('cfg',{...S.cfg,id:'cfg',ctg:tg,cmx:mx,cphone:phone});hap('success');toast('Контакты сохранены')}
 async function setNtf(k,el){const on=el.checked;await put('cfg',{...S.cfg,id:'cfg',[k]:on});toast(on?'Включено':'Выключено')}
 async function saveSet(group){
-    const idList={tariffs:['exm'],payments:['multi_discount','pen','dd','dmin','dbd'],fees:['tax','acq','receipt']}[group];
+    const idList={payments:['multi_discount','pen','dd','dmin','dbd'],fees:['tax','acq','receipt']}[group];
     if(!idList)return;
     const fields=idList.map(id=>document.getElementById(id));
     const edited=Object.fromEntries(fields.map(input=>[input.id,+input.value]));
     if(fields.some(input=>input.value===''||!input.checkValidity()))return uiAlert('Проверьте значения в этом разделе.');
-    if(group=='tariffs'){
-        const markup=[...document.querySelectorAll('[data-n]')];
-        edited.mk={w:Object.fromEntries(markup.map(input=>[input.dataset.n,+input.value])),m:(S.cfg.mk||C.MK).m};
-        edited.ds=(S.cfg.ds||[[30000,2],[50000,4]]).map((_,i)=>[+v('#da'+i),+v('#db'+i)]);
-    }
     await put('cfg',{...S.cfg,id:'cfg',...edited});hap('success');toast('Настройки сохранены');
 }
 /* ---------- backup */
@@ -976,24 +1352,199 @@ const perms=[...document.querySelectorAll('[data-p]:checked')].map(i=>i.dataset.
 async function admReset(id){if(!await uiConfirm('Администратор потеряет доступ, пока не войдёт по новой ссылке.','Сбросить',{title:'Сбросить доступ?'}))return;await api('/api/unbind',{client:'adm:'+id});await load();toast('Доступ сброшен')}
 async function admOff(id){const a=S.admins.find(x=>x.id==id);await put('admin',{...a,disabled:!a.disabled});toast(a.disabled?'Доступ отключён':'Доступ включён')}
 async function admDel(id){if(!await uiConfirm('Администратор исчезнет из списка и потеряет доступ.','Удалить',{danger:true,title:'Удалить администратора?'}))return;await api('/api/del',{id});await load(true);back();toast('Администратор удалён')}
-/* ---------- log */
-const jp=x=>{try{return JSON.parse(x)}catch(e){return null}};
-const kindOf=(id,d)=>S.deals.some(x=>x.id==id)?'deal':S.bikes.some(x=>x.id==id)?'bike':S.clients.some(x=>x.id==id)?'client':S.admins.some(x=>x.id==id)?'admin':id=='cfg'?'cfg':d&&d.paid?'deal':d&&d.perms?'admin':d&&d.phone?'client':d&&d.name?'bike':'';
-function logWhat(a,id,o,n){if(QLA[a])return logQR(a,id,o,n);o=jp(o);n=jp(n);const d=n||o||{};
-if(a=='restore')return'Восстановление из копии';if(a=='defer-client'){const x=S.deals.find(q=>q.id==id);return 'Клиент взял отсрочку: '+(x?nm(x.client):'')}
-if(a=='invite'||a=='unbind'||a=='login'){const c=id.startsWith('adm:')?(S.admins.find(x=>x.id==id.slice(4))||{}).name:nm(id);return {invite:'Ссылка для входа',unbind:'Сброс доступа',login:'Вход администратора'}[a]+': '+(c||'')}
-const k=kindOf(id,d),lab=k=='deal'?`${nm(d.client)}, ${bk(d.bike)}`:k=='cfg'?'настройки':d.name||'';
-if(a=='del')return 'Удалено: '+lab;
-if(!o)return {deal:'Оформлен выкуп',bike:'Добавлен велосипед',client:'Добавлен клиент',admin:'Добавлен администратор',cfg:'Настройки'}[k]+': '+lab;
-let w='Изменено';
-if(k=='deal'){const po=Object.keys(o.paid||{}).length,pn=Object.keys(n.paid||{}).length;const nk=Object.keys(n.paid||{}).find(q=>!(o.paid||{})[q]);w=pn>po?(nk&&n.paid[nk].part?'Принята частичная оплата':'Принята оплата'):pn<po?'Отменена оплата':(n.dpays||[]).length>(o.dpays||[]).length?'Принята оплата долга':(n.dpays||[]).length<(o.dpays||[]).length?'Отменена оплата долга':n.pw&&n.pw!=o.pw?'Списана неустойка':C.nopen(n)!=C.nopen(o)?(C.nopen(n)?'Неустойка не начисляется':'Неустойка снова начисляется'):(n.early||[]).length>(o.early||[]).length?'Досрочный платёж':(n.shift||0)>(o.shift||0)?'Отсрочка':n.status!=o.status?{archived:'Выкуп завершён',seized:'Велосипед изъят',lost:'Списание велосипеда',active:'Выкуп снова открыт'}[n.status]||'Статус изменён':n.bike!=o.bike?'Замена велосипеда':'Изменён выкуп'}
-else if(k=='bike')w=n.wo&&!o.wo?'Списан':!n.wo&&o.wo?'Возвращён в парк':n.archived&&!o.archived?'В архив':(n.exp||[]).length>(o.exp||[]).length?'Добавлен расход':(n.exp||[]).length<(o.exp||[]).length?'Удалён расход':'Изменён';
-else if(k=='client')w=n.archived&&!o.archived?'В архив':'Изменён';else if(k=='cfg')w='Изменены настройки';else if(k=='admin')w=n.disabled!=o.disabled?(n.disabled?'Доступ отключён':'Доступ включён'):'Изменены права';
-return w+(k=='cfg'?'':': '+lab)}
-function logRow([ts,act,id,o,n]){const[a,p]=act.split('@'),who=a=='defer-client'?'Клиент':p||'Вы',t=new Date(ts);
-return `<div class="row nl" style="cursor:default;min-height:64px"><span class=tx><b style="font-size:16px;white-space:normal">${esc(logWhat(a,id,o,n))}</b><span>${esc(who)}, ${ts.slice(8,10)}.${ts.slice(5,7)} ${ts.slice(11,16)}</span></span></div>`}
-const logS=()=>`${backBtn()}<div class=hd><div><small>Последние 250 действий</small><h1>Журнал</h1></div></div><div id=lg><div class=spin style="margin-top:16vh"></div></div>`;
-async function loadLog(){try{const L=await api('/api/log');$('#lg').innerHTML=L.length?`<div class=grp>${L.map(logRow).join('')}</div>`:empty('list','Записей пока нет')}catch(e){$('#lg').innerHTML=empty('alert','Не удалось загрузить журнал')}}
+/* ---------- action journal */
+const journalGroups={payment:'Оплата и сверка',deal:'Выкупы и графики',bike:'Велосипеды',access:'Клиенты и доступ',settings:'Настройки'};
+const journalActions={
+    'pay-periods':['payment','Принят платёж по графику'],'pay-qr':['payment','Принята оплата по QR'],
+    'pay-debt':['payment','Оплачен долг'],'cancel-payment':['payment','Отменён платёж'],
+    'cancel-debt-pay':['payment','Отменена оплата долга'],'move-payment':['payment','Платёж перенесён'],
+    'qr':['payment','Создан QR для оплаты'],'qr-paid':['payment','Оплата QR подтверждена'],
+    'qr-review':['payment','QR отправлен на проверку'],'qr-duplicate':['payment','Повторное подтверждение QR'],
+    'qr-reconciled':['payment','QR сверён с выпиской'],'bill':['payment','Выставлен платёж'],
+    'bill-paid':['payment','Принят выставленный платёж'],'bill-void':['payment','Отменён выставленный платёж'],
+    'statement-link':['payment','Платёж связан со строкой выписки'],'undo-statement-surplus':['payment','Остаток отменён'],
+    'unk':['payment','Платёж требует проверки'],'unk-apply':['payment','Платёж засчитан'],'unk-done':['payment','Сверка завершена'],
+    'payment-report':['payment','Клиент сообщил об оплате'],'payment-report-resolve':['payment','Обращение об оплате обработано'],
+    'reschedule-request':['deal','Запрошено изменение графика'],'reschedule-approve':['deal','Одобрен новый график'],
+    'reschedule-reject':['deal','Заявка на график отклонена'],'reschedule-manual':['deal','График изменён вручную'],
+    'reschedule-close':['deal','Заявка на график закрыта'],'defer-client':['deal','Клиент взял отсрочку'],
+    'defer-period':['deal','Предоставлена отсрочка'],'deal-note':['deal','Изменена заметка по выкупу'],
+    'close-deal':['deal','Выкуп завершён'],'return-deal':['deal','Оформлен возврат велосипеда'],
+    'writeoff-deal':['deal','Выкуп закрыт при списании'],'writeoff-bike':['bike','Велосипед списан'],
+    'prepare-bike':['bike','Изменён статус подготовки'],'archive-bike':['bike','Велосипед отправлен в архив'],
+    'archive-client':['access','Клиент отправлен в архив'],'delete-archived-client':['access','Карточка клиента удалена'],
+    'delete-archived-bike':['bike','Карточка велосипеда удалена'],'invite':['access','Создана ссылка для входа'],
+    'invite-qr':['access','Создан QR для входа'],'unbind':['access','Сброшен доступ'],
+    'login':['access','Администратор вошёл'],'login-client':['access','Клиент вошёл'],
+    'tochka':['settings','Изменено подключение Точки'],'restore':['settings','Восстановлена резервная копия']
+};
+const logTime=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'short',timeStyle:'medium'});
+function logSnapshot(value){
+    try{const data=JSON.parse(value);return data&&typeof data=='object'?data:{}}catch{return {}}
+}
+const journalDeal=data=>data.paid&&typeof data.paid=='object';
+function journalKind(id,data){
+    if(id=='cfg'||id=='tch')return 'settings';
+    if(id.startsWith('adm:')||data.perms||S.admins.some(item=>item.id==id))return 'access';
+    if(data.deal||journalDeal(data)||S.deals.some(item=>item.id==id))return 'deal';
+    if(data.phone||S.clients.some(item=>item.id==id))return 'access';
+    if(data.name||S.bikes.some(item=>item.id==id))return 'bike';
+    return 'deal';
+}
+function journalSubject(id,data,kind){
+    const deal=journalDeal(data)?data:S.deals.find(item=>item.id==(data.deal||id));
+    const client=S.clients.find(item=>item.id==(deal?.client||data.client||id));
+    const bike=S.bikes.find(item=>item.id==(deal?.bike||id));
+    const admin=S.admins.find(item=>item.id==(id.startsWith('adm:')?id.slice(4):id));
+    const subject=deal?[deal.contract&&`Договор № ${deal.contract}`,client?.name,bike?.name]:
+        [data.name||admin?.name||client?.name||bike?.name];
+    return subject.filter(Boolean).join(' · ')||(id=='cfg'?'Общие настройки':id=='tch'?'Точка':data.deal||id||journalGroups[kind]);
+}
+function journalTitle(action,kind,id,before,after){
+    if(journalActions[action])return journalActions[action][1];
+    const subject={deal:'выкуп',bike:'велосипед',access:id.startsWith('adm:')||before.perms||after.perms?'администратор':'клиент',settings:'настройки'}[kind];
+    if(action=='del')return 'Удалено · '+subject;
+    if(kind=='settings')return 'Изменены настройки';
+    if(!Object.keys(before).length)return kind=='deal'?'Оформлен выкуп':'Добавлено · '+subject;
+    if(kind=='deal'){
+        if(after.bike!=before.bike)return 'Велосипед заменён';
+        if(after.pw&&after.pw!=before.pw)return 'Списана неустойка';
+        if(C.nopen(after)!=C.nopen(before))return C.nopen(after)?'Неустойка приостановлена':'Неустойка снова начисляется';
+        const delta=Object.keys(after.paid||{}).length-Object.keys(before.paid||{}).length;
+        if(delta)return delta>0?'Принят платёж':'Отменён платёж';
+        if((after.dpays||[]).length!=(before.dpays||[]).length)return (after.dpays||[]).length>(before.dpays||[]).length?'Оплачен долг':'Отменена оплата долга';
+        if((after.early||[]).length>(before.early||[]).length)return 'Принят досрочный платёж';
+    }
+    if(kind=='bike'&&(after.exp||[]).length!=(before.exp||[]).length)return (after.exp||[]).length>(before.exp||[]).length?'Добавлен расход':'Удалён расход';
+    if(after.archived!==before.archived&&typeof after.archived=='boolean')return after.archived?'Отправлено в архив':'Возвращено из архива';
+    return 'Изменено · '+subject;
+}
+function journalEntry([ts,act,id,old,fresh]){
+    id=String(id??'');
+    const [action,...author]=String(act).split('@'),before=logSnapshot(old),after=logSnapshot(fresh);
+    const data=fresh?after:before,kind=journalKind(id,data),group=journalActions[action]?.[0]||kind;
+    const recorded=author.join('@');
+    const clientActions=['defer-client','reschedule-request','payment-report','login-client'];
+    const bankActions=['pay-qr','qr-paid','qr-duplicate'];
+    const actor=recorded?(recorded=='owner'?'Владелец':recorded):clientActions.includes(action)?'Клиент':
+        bankActions.includes(action)?'Банк':action=='qr-review'?'Автосверка':['qr','bill-paid','unk'].includes(action)?'Автор не записан':'Владелец';
+    const date=new Date(ts),when=Number.isNaN(date.getTime())?String(ts):logTime.format(date)+' МСК';
+    return {action,id,kind,group,before,after,actor,when,subject:journalSubject(id,data,kind),title:journalTitle(action,kind,id,before,after)};
+}
+const journalStatuses={active:'Действует',archived:'В архиве',seized:'Велосипед возвращён',lost:'Списано',
+    open:'Открыто',paid:'Оплачено',void:'Отменено',done:'Завершено',pending:'На рассмотрении',approved:'Одобрено',
+    rejected:'Отклонено',closed:'Закрыто',review:'На проверке',duplicate:'Повтор',applied:'Зачтено',credited:'Зачтён',not_found:'Не найден'};
+const journalDate=value=>typeof value=='string'&&/^\d{4}-\d\d-\d\d/.test(value)?fmt(value.slice(0,10)):String(value);
+const journalMoney=value=>Number.isFinite(Number(value))?m(value):String(value);
+const journalPercent=value=>pc(value)+'%';
+const journalYesNo=value=>value?'Да':'Нет';
+function journalFields(data,kind,action){
+    const fields=new Map(),set=(label,value,format=String)=>{if(value!=null&&value!=='')fields.set(label,format(value))};
+    const rate=kind=='settings'?journalPercent:journalMoney,isDeal=journalDeal(data);
+    const labels=[['name','Имя или название'],['phone','Телефон'],['vin','VIN'],['contract','Номер договора'],
+        ['status','Статус',value=>journalStatuses[value]||value],['model','Модель',value=>modelName(value)||value],['batteries','Количество аккумуляторов'],
+        ['archived','В архиве',journalYesNo],['disabled','Доступ отключён',journalYesNo],['on','Банк подключён',journalYesNo],
+        ['start','Дата оформления',journalDate],['closed','Дата закрытия',journalDate],['date','Дата операции',journalDate],
+        ['first','Первая дата нового графика',journalDate],['until','Отсрочка до',journalDate],['decided','Дата решения',journalDate],
+        ['completed_at','Дата полной оплаты',journalDate],['resolved','Дата ответа',journalDate],
+        ['pw','Дата списания неустойки',journalDate],['n',data.type=='m'?'Срок, месяцев':'Срок, недель'],['count','Количество взносов'],
+        ['down','Первоначальный взнос',journalMoney],['pay','Платёж за период',journalMoney],
+        ['total','Цена выкупа',journalMoney],['cost','Закупка',journalMoney],['refund','Возврат',journalMoney],
+        ['amt','Сумма',journalMoney],['amount','Сумма',cents],['balance','Остаток графика',journalMoney],
+        ['firstAmount','Первый взнос по заявке',journalMoney],['lastAmount','Последний взнос по заявке',journalMoney],
+        ['previous','Дата предпоследнего взноса',journalDate],['gap','Дней до последнего взноса'],
+        ['tax','Налог',rate],['acq','Эквайринг',rate],['receipt','Расход на чеки',rate],
+        ['pen','Неустойка',kind=='settings'||isDeal?journalPercent:journalMoney],['multi_discount','Скидка за несколько платежей',journalPercent],
+        ['dmin','Минимум частичной оплаты',journalPercent],['dbd','Дней на погашение остатка'],['dd','Дней отсрочки'],
+        ['exm','Наценка на второй аккумулятор',journalPercent],['shift','Сдвиг графика, дней'],
+        ['method','Способ оплаты'],['reference','Номер операции'],['reason','Причина'],['why','Причина проверки'],['answer','Ответ'],
+        ['note','Заметка'],['comment','Комментарий'],['login_method','Способ входа'],['ttl','Срок действия, секунд'],['docs','Записей в копии'],
+        ['retained_deals','Сохранено закрытых выкупов']];
+    for(const [key,label,format] of labels){
+        if(['string','number','boolean'].includes(typeof data[key]))set(label,data[key],format);
+    }
+    set('Клиент',data.client,id=>S.clients.find(item=>item.id==id)?.name||id);
+    set('Велосипед',data.bike,id=>S.bikes.find(item=>item.id==id)?.name||id);
+    set('Служебная заметка',data.private_note?.text);
+    set('Подготовка',data.preparation?.status,value=>PREP[value]?.[0]||value);
+    set('Дата подготовки',data.preparation?.updated,journalDate);
+    set('Причина списания',data.wo?.reason);
+    set('Убыток при списании',data.wo?.loss,m);
+    set('Остаток долга',data.debt?.amt,m);
+    set('Срок доплаты',data.debt?.due,journalDate);
+    if(data.lastAmount!=null)set('Дата последнего взноса',data.last,journalDate);
+    else set('Последний взнос по графику',data.last,journalMoney);
+    if(isDeal)set('Неустойка приостановлена',C.nopen(data),journalYesNo);
+    if(data.tariff)set('Тариф при выдаче',data.tariff,value=>[value.batteries?configurationName(value.model,value.batteries):modelName(value.model),`${value.weeks} нед.`,`${m(value.weekly)} в неделю`].join(' · '));
+    if(Array.isArray(data.perms))set('Права',data.perms,values=>values.map(key=>PL.find(([code])=>code==key)?.[1]||key).join(', ')||'Нет');
+    if(typeof data.nown=='boolean')set('Уведомления владельцу',data.nown,journalYesNo);
+    if(typeof data.ncli=='boolean')set('Напоминания клиенту',data.ncli,journalYesNo);
+    if(Array.isArray(data.ks)&&data.ks.length)set('Периоды',data.ks,values=>values.join(', '));
+    const received=payment=>[payment.date&&journalDate(payment.date),m(C.money(C.minor(payment.amt||0)+C.minor(payment.pen||0))),
+        payment.method,payment.pen?`неустойка ${m(payment.pen)}`:'',payment.part?'частичная оплата':''].filter(Boolean).join(' · ');
+    for(const [period,payment] of Object.entries(isDeal?data.paid:{})){
+        if(payment&&typeof payment=='object')set(`Взнос ${period} · оплата`,payment,received);
+    }
+    (data.dpays||[]).forEach((payment,index)=>set(`Доплата ${index+1}`,payment,received));
+    (data.early||[]).forEach((payment,index)=>set(`Досрочный платёж ${index+1}`,{...payment,amt:payment.paid??payment.amt},received));
+    (data.bonuses||[]).forEach((bonus,index)=>set(`Скидка ${index+1}`,bonus,value=>`${m(value.amt)} · ${journalPercent(value.rate)}`));
+    (data.exp||[]).forEach((expense,index)=>set(`Расход ${index+1}`,expense,value=>[value.date&&journalDate(value.date),m(value.amt),value.text].filter(Boolean).join(' · ')));
+    for(const {key,name} of configurations){
+        const rates=data.tariffs?.[key]||{};
+        for(const [weeks,weekly] of Object.entries(rates))set(`${name} · ${weeks} нед.`,weekly,m);
+        set(`Закупка · ${name}`,data.purchaseCosts?.[key],m);
+    }
+    if(isDeal&&data.start&&data.type){
+        if(action.startsWith('defer-')){
+            for(const row of C.sched(data))set(`Взнос ${row.k} · срок оплаты`,C.deadline(data,row),journalDate);
+        }else if(['pay-periods','pay-qr','move-payment','cancel-payment','unk-apply'].includes(action)||action.startsWith('reschedule-')){
+            for(const row of C.sched(data))set(`План · взнос ${row.k}`,row,item=>`${journalDate(item.due)} · ${m(item.amt)}`);
+        }
+    }
+    return fields;
+}
+function journalChanges(entry){
+    const before=journalFields(entry.before,entry.kind,entry.action),after=journalFields(entry.after,entry.kind,entry.action);
+    return [...new Set([...before.keys(),...after.keys()])].filter(label=>before.get(label)!=after.get(label))
+        .map(label=>({label,before:before.get(label)??'—',after:after.get(label)??'—'}));
+}
+let journalEntries=[];
+const logS=()=>`${backBtn()}<div class=hd><div><small>Последние 250 действий</small><h1>Журнал действий</h1></div></div>
+    <div class=form><label class=fld><span>Поиск по журналу</span><input id=log-search type=search oninput=drawLog() placeholder="Клиент, договор или автор"></label>
+    <label class=fld><span>Раздел</span><select id=log-group onchange=drawLog()><option value="">Все действия</option>
+    ${Object.entries(journalGroups).map(([key,label])=>`<option value="${key}">${label}</option>`).join('')}</select></label></div>
+    <div id=lg><div class=spin style="margin-top:10vh"></div></div>`;
+function drawLog(){
+    const list=$('#lg');if(!list)return;
+    const query=v('#log-search').trim().toLowerCase(),group=v('#log-group');
+    const rows=journalEntries.map((entry,index)=>({entry,index})).filter(({entry})=>
+        (!group||entry.group==group)&&(!query||[entry.title,entry.subject,entry.actor,entry.when].some(value=>value.toLowerCase().includes(query))));
+    list.innerHTML=rows.length?`<div class=grp>${rows.map(({entry,index})=>
+        `<button class="row nl wr" onclick="showLogEntry(${index})"><span class=gl>${ic('list')}</span>
+        <span class=tx><b>${esc(entry.title)}</b><span>${esc(entry.subject)}</span>
+        <span>${esc(entry.actor)} · ${esc(entry.when)}</span></span>${ic('right','s')}</button>`).join('')}</div>`:
+        empty('list',journalEntries.length?'По этому запросу действий нет':'Записей пока нет');
+}
+function showLogEntry(index){
+    const entry=journalEntries[index];if(!entry)return;
+    const changes=journalChanges(entry);
+    const table=changes.length?`<table class="data-table journal-table"><thead><tr><th scope=col>Поле</th><th scope=col>Было</th><th scope=col>Стало</th></tr></thead>
+        <tbody>${changes.map(change=>`<tr><th scope=row>${esc(change.label)}</th><td>${tx2(change.before)}</td><td>${tx2(change.after)}</td></tr>`).join('')}</tbody></table>`:
+        '<p class=sub>Для этого действия сохранена запись о событии.</p>';
+    return sheet(`<h3>${esc(entry.title)}</h3><div class=pv>${kv('Автор',esc(entry.actor))}${kv('Время',esc(entry.when))}
+        ${kv('Карточка',esc(entry.subject))}</div>${table}<button class="btn sec blk" data-close>Закрыть</button>`,
+        (root,done)=>root.querySelector('[data-close]').onclick=()=>done());
+}
+async function loadLog(){
+    const list=$('#lg');
+    journalEntries=[];
+    try{
+        const rows=await api('/api/log');
+        if(list!==$('#lg'))return;
+        journalEntries=rows.map(journalEntry);drawLog();
+    }catch{if(list&&list===$('#lg'))list.innerHTML=empty('alert','Не удалось загрузить журнал')}
+}
+
 /* ---------- invitations */
 const invBtns=cid=>`<button class="btn" onclick="loginQR('${cid}')">${ic('receipt','s')}QR для входа</button><button class="btn sec" onclick="invite('${cid}')">${ic('link','s')}Ссылка для входа</button><button class="btn sec" onclick="unbind('${cid}')">${ic('lock','s')}Сбросить доступ</button>`;
 async function invite(cid){try{const r=await api('/api/invite',{client:cid}),link=`https://t.me/${r.bot}?startapp=${r.tok}`,ad=cid.startsWith('adm:');
@@ -1020,8 +1571,8 @@ function qrPng(q){if(q.img)return'data:image/png;base64,'+q.img;
 const M=QR.make(q.payload),n=M.length,z=Math.max(4,Math.floor(900/(n+8))),w=z*(n+8),c=document.createElement('canvas');c.width=c.height=w;const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,w,w);x.fillStyle='#000';
 M.forEach((r,j)=>r.forEach((d,i)=>{if(d)x.fillRect((i+4)*z,(j+4)*z,z,z)}));return c.toDataURL('image/png')}
 /* Telegram cannot save a picture straight to the gallery, so the server keeps the picture for 10 minutes and Telegram downloads it as a file */
-async function saveQR(q){
-    try{const file=await api('/api/qrimg',{png:qrPng(q)});downloadNamed({...file,name:'qr-oplata.png'})}
+async function saveQR(q,qid){
+    try{const file=await api('/api/qrimg',{png:qrPng(q),qr:qid});downloadNamed({...file,name:'qr-oplata.png'})}
     catch(error){uiAlert('Не удалось сохранить QR. Сделайте снимок экрана с кодом.')}
 }
 async function showQR(qid,title,client){let q;try{q=await api('/api/qr/'+qid)}catch(e){return uiAlert(e)}let timer;
@@ -1032,7 +1583,7 @@ await sheet(`<h3>${client?'Оплата по QR':'QR на оплату'}</h3><p>
 <button class="btn sec blk" data-v>${ic('down','s')}Сохранить QR в галерею</button>${client?'':`<button class="btn sec blk" data-s>${ic('send','s')}Отправить клиенту</button><button class="btn sec blk" data-c>${ic('copy','s')}Скопировать ссылку</button>`}
 <p class=qh><b>Если банк не открылся:</b> сохраните QR в галерею, затем в приложении банка выберите «Оплата по QR» и загрузите картинку из галереи. Или отсканируйте этот код с другого телефона.</p>
 <button class="btn sec blk" data-x>Закрыть</button>`,(o,d)=>{
-o.querySelector('[data-x]').onclick=()=>d();o.querySelector('[data-v]').onclick=()=>saveQR(q);
+o.querySelector('[data-x]').onclick=()=>d();o.querySelector('[data-v]').onclick=()=>saveQR(q,qid);
 const s=o.querySelector('[data-s]');if(s)s.onclick=()=>T.openTelegramLink('https://t.me/share/url?url='+encodeURIComponent(q.payload)+'&text='+encodeURIComponent('Оплата выкупа: '+m(q.amt)));
 const c=o.querySelector('[data-c]');if(c)c.onclick=async()=>{try{await navigator.clipboard.writeText(q.payload);toast('Ссылка скопирована')}catch(e){}};
 const st=(cls,ico,txt)=>{const e=o.querySelector('#qs');e.className='note '+cls;e.innerHTML=(ico?ic(ico,'s'):'')+'<div>'+txt+'</div>'};
@@ -1046,19 +1597,20 @@ const updateQR=x=>{
     return false;
 };
 if(updateQR(q))return;
-const poll=async()=>{try{updateQR(await api('/api/qr/'+qid))}catch(error){}};
+const poll=async()=>{try{updateQR(await api('/api/qr/'+qid))}catch(error){if(error=='код 403'||error=='код 404'){st('t-n','','QR недоступен.');stop()}}};
 timer=setInterval(()=>{if(!document.body.contains(o)){clearInterval(timer);return}poll()},4000)},null);clearInterval(timer)}
 /* ---------- client */
 const CQT={now:'Оплата выкупа',debt:'Доплата долга',bill:'Выставленный платёж'};
 async function cQR(kind,deal,bill){let r;try{r=await api('/api/cqr',{deal,kind,bill})}catch(e){return uiAlert(e)}
-await showQR(r.qr,CQT[kind],1);try{ME=await api('/api/me');if(ME.role=='client')crender()}catch(e){}}
+await showQR(r.qr,CQT[kind],1);try{await refreshClientAccount()}catch(e){}}
 const cQRb=(kind,d,bill,cls,txt)=>`<button class="btn blk ${cls||''}" onclick="cQR('${kind}','${d.id}'${bill?`,'${bill}'`:''})">${ic('receipt','s')}${txt}</button>`;
 
 function paymentHelp(kind){
     const settings=ME.role=='client'?ME:S.cfg,rate=settings.multi_discount??1.5,minimum=Math.max(50,settings.dmin??50),days=settings.dbd??3;
     const texts={
         multi:[`Оплата нескольких периодов`,
-            `Выберите два или больше ближайших неоплаченных периодов. При оплате одним платежом скидка составит ${pc(rate)}% от суммы за периоды.`,
+            'Взносы оплачиваются по порядку сроков. Сначала закрывается самый ранний неоплаченный взнос. Если есть отсрочка, учитывается новая дата оплаты.',
+            `При оплате двух и более периодов одним платежом скидка составит ${pc(rate)}% от суммы за периоды.`,
             `Скидка засчитывается сверх внесённых денег и уменьшает платежи с конца графика. При оплате 15 000 ₽ и ставке ${pc(rate)}% последние платежи уменьшатся на ${m(Math.round(15000*rate/100))}.`,
             `Сумма округляется до целых рублей. Неустойка оплачивается отдельно и в расчёт скидки не входит. Если скидка достигает выбранного последнего периода, сумма к оплате тоже уменьшается. Точный расчёт показан до оплаты.`],
         part:[`Частичная оплата`,
@@ -1070,9 +1622,16 @@ function paymentHelp(kind){
     return sheet(`<h3>${title}</h3>${paragraphs.map(text=>`<p>${esc(text)}</p>`).join('')}<button class="btn blk" data-close>Понятно</button>`,(root,done)=>root.querySelector('[data-close]').onclick=()=>done());
 }
 
+async function refreshClientAccount(){
+    ME=await api('/api/me');lastLoad=Date.now();
+    if(ME.role=='client')return crender();
+    CV=['main'];selectedClientDeal=null;
+    document.querySelectorAll('.ov').forEach(overlay=>overlay.click());
+    center('lock','Доступ закрыт','Обратитесь к владельцу для входа.');chrome();
+}
 async function refreshAccount(){
-    if(ME.role=='client'){ME=await api('/api/me');lastLoad=Date.now();crender()}
-    else await load();
+    if(ME.role=='client')await refreshClientAccount();
+    else if(ME.role=='owner'||ME.role=='admin')await load();
 }
 
 const confirmDuplicate=payment=>!payment||uiConfirm(`По этому выкупу уже учтён платёж по QR от ${fmt(payment.date)} на ${cents(payment.amount)}. Проверьте, что у вас другая операция.`,'Это другой платёж',{title:'Возможна двойная оплата'});
@@ -1086,6 +1645,7 @@ async function paymentOptions(id,manual=false,statement=null){
         ${statement?`<p>По выписке ${cents(statement.amount)}, ${fmt(statement.date)}. Выберите, какие взносы закрывает этот перевод.</p>`:''}
         <label class=fld><span>Как оплачивать</span><select data-mode>${I.x?'<option value=periods>Полные платежи</option>':''}${part?'<option value=part>Часть ближайшего платежа</option>':''}${statement&&I.x?'<option value=bank-period>В ближайший взнос, фактическая сумма</option>':''}${statement&&I.g?'<option value=bank-debt>В погашение долга</option>':''}</select></label>
         <div data-full><label class=fld><span>Количество периодов</span><select data-count>${I.un.map((_,index)=>`<option value="${index+1}">${index+1} ${plur(index+1,'период','периода','периодов')}</option>`).join('')}</select></label>
+        <p class="sm mu">Взносы оплачиваются по порядку сроков, начиная с самого раннего неоплаченного.</p>
         <p class=help-line>От двух платежей скидка ${pc(settings.multi_discount??1.5)}% <button class=qi type=button onclick="paymentHelp('multi')" aria-label="Как начисляется скидка">?</button></p></div>
         <div data-part hidden><label class=fld><span>Часть платежа, ₽</span><input data-amount type=number inputmode=numeric min="${minPart}" value="${minPart}"></label>
         <p class=help-line>Не меньше ${minimum}% <button class=qi type=button onclick="paymentHelp('part')" aria-label="Как работает частичная оплата">?</button></p></div>
@@ -1181,10 +1741,12 @@ function planSummary(plan){
         ${plan.keptOverdue?kv('Просроченные периоды отдельно',m(plan.keptOverdue)):''}${plan.keptDeferred?kv('Взносы с отсрочкой отдельно',m(plan.keptDeferred)):''}${plan.debt?kv('Долг отдельно',m(plan.debt)):''}${scheduleComparison(plan)}`;
 }
 function scheduleComparison(plan){
-    if(!plan.before?.length||!plan.after?.length)return '';
+    const before=plan.beforeEnding||plan.before,after=plan.afterEnding||plan.after;
+    if(!before?.length||!after?.length)return '';
     const column=row=>row?`${fmt(row.due)}<br><b>${m(row.amt)}</b>`:'—';
-    const rows=Array.from({length:Math.max(plan.before.length,plan.after.length)},(_,i)=>`<tr><td>${column(plan.before[i])}</td><td>${column(plan.after[i])}</td></tr>`).join('');
-    return `<details class=fold><summary><b>Было → Стало</b></summary><table class="data-table plan-table"><thead><tr><th scope=col>Было</th><th scope=col>Стало</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+    const rows=[[-2,'Предпоследний'],[-1,'Последний']].filter(([i])=>before.at(i)||after.at(i)).map(([i,label])=>
+        `<tr><th scope=row>${label}</th><td>${column(before.at(i))}</td><td>${column(after.at(i))}</td></tr>`).join('');
+    return `<details class=fold><summary><b>Было → Стало</b></summary><table class="data-table plan-table"><thead><tr><th scope=col>Платёж</th><th scope=col>Было</th><th scope=col>Стало</th></tr></thead><tbody>${rows}</tbody></table></details>`;
 }
 
 async function requestSchedule(id){
@@ -1316,10 +1878,6 @@ async function clearTch(){if(!await uiConfirm('Клиенты и вы больш
 try{await api('/api/tochka',{clear:1});await load();toast('Оплата по QR отключена')}catch(e){uiAlert(e)}}
 async function copyHook(){try{await navigator.clipboard.writeText(location.origin+'/hook/tochka/'+S.tch.hook);toast('Адрес скопирован')}catch(e){uiAlert(location.origin+'/hook/tochka/'+S.tch.hook)}}
 /* ---------- log labels of the QR actions */
-const QLA={'pay-qr':'Оплата по QR','qr-paid':'QR оплачен','qr':'Создан QR','bill':'Выставлен платёж','bill-paid':'Платёж принят','bill-void':'Платёж отменён','unk':'Платёж не распознан','unk-apply':'Платёж засчитан','unk-done':'Платёж разобран','tochka':'Настройки Точки'};
-function logQR(a,id,o,n){const d=jp(n)||jp(o)||{},dl=S.deals.find(x=>x.id==(d.client?id:d.deal));
-return QLA[a]+(a=='tochka'||!dl?'':': '+nm(dl.client)+', '+bk(dl.bike)+(d.client||!d.amt?'':' · '+m(d.amt)))}
-
 /* ---------- screens for the owner and administrators */
 /* ---------- deal tools and payment support */
 async function editDealNote(id){
@@ -1346,11 +1904,16 @@ async function messageTemplates(id){
     const variants=dealMessages(dealById(id)),keys=Object.keys(variants);
     if(!keys.length)return uiAlert('Шаблоны доступны для действующего выкупа.');
     const kind=keys.length==1?keys[0]:await uiPick('Шаблоны сообщений',keys);if(!kind)return;
-    await sheet(`<h3>${kind}</h3><textarea rows=5 data-message aria-label="Текст сообщения">${esc(variants[kind])}</textarea><button class="btn blk" data-copy>Скопировать</button><button class="btn sec blk" data-close>Закрыть</button>`,(root,done)=>{
+    return copyTextSheet(kind,variants[kind]);
+}
+function copyTextSheet(title,text,configure,extra=''){
+    return sheet(`<h3>${esc(title)}</h3>${extra}<textarea rows=${text.includes('\n')?9:5} data-message aria-label="Текст для отправки">${esc(text)}</textarea><button class="btn blk" data-copy>Скопировать</button><button class="btn sec blk" data-close>Закрыть</button>`,(root,done)=>{
         const field=root.querySelector('[data-message]');root.querySelector('[data-close]').onclick=()=>done();
+        configure?.(root);
         root.querySelector('[data-copy]').onclick=async()=>{
-            try{await navigator.clipboard.writeText(field.value);toast('Текст скопирован');done()}
-            catch{field.focus();field.select();if(document.execCommand?.('copy')){toast('Текст скопирован');done()}}
+            try{await navigator.clipboard.writeText(field.value)}
+            catch{field.focus();field.select();if(!document.execCommand?.('copy'))return}
+            toast('Текст скопирован');done();
         };
     });
 }
@@ -1491,7 +2054,7 @@ async function chooseStatementDeal(operation){
     if(id&&await paymentOptions(id,true,operation))await refreshStatement();
 }
 
-const SCR={home,base,add,fClient,fBike,fDeal,deal,debtS,calcS,rep,set,expS,woS,swapS,bikeView,fAdmin,logS,statementS};
+const SCR={home,base,add,fClient,fBike,fDeal,deal,debtS,calcS,rep,set,tariffsS,expS,woS,swapS,bikeView,fAdmin,logS,statementS};
 /* ---------- client */
 let CV=['main'];
 const cgo=s=>{CV.push(s);navDir='fw';crender()},cback=()=>{if(CV.length>1){CV.pop();navDir='bw'}crender()};
@@ -1529,20 +2092,24 @@ function completionPopup(d){
 }
 /* short explanations for the client: what a function does, shown by the «?» next to it */
 const CI={sch:['График платежей',['Здесь все платежи по выкупу по порядку: за какой период, до какого числа и на какую сумму.','Зелёная галочка значит, что период оплачен. Красным отмечены просроченные периоды: к ним добавляется неустойка, она указана в строке.','Жёлтый значок значит, что внесена только часть платежа: в строке написано, сколько внесено из какой суммы, а остаток стал долгом, и указана дата, до которой его нужно внести.']],
-change:['Изменение графика',['По заявке можно изменить график один раз за выкуп. Дата первого взноса нового графика может отличаться от текущей максимум на 7 дней. Дата последнего взноса сохраняется.','Перед отправкой сравните графики в разделе «Было → Стало». Если два последних платежа стоят близко, приложение покажет интервал между ними.','Новый график действует после одобрения. Просрочка, взносы с отсрочкой и долг оплачиваются по своим срокам.']],
+change:['Изменение графика',['По заявке можно изменить график один раз за выкуп. Дата первого взноса нового графика может отличаться от текущей максимум на 7 дней. Дата последнего взноса сохраняется.','Перед отправкой сравните даты и суммы предпоследнего и последнего взносов в разделе «Было → Стало». Приложение покажет интервал между ними.','Новый график действует после одобрения. Просрочка, взносы с отсрочкой и долг оплачиваются по своим срокам.']],
 hist:['История оплат',['Здесь все платежи, которые приняты по вашему выкупу: дата, сумма и способ оплаты.','Если платёж был с неустойкой, она указана отдельно. Оплаты долга и досрочные платежи тоже есть в списке.','Не нашли свой платёж или видите лишний? Сообщите нам.']],
 qr:['Оплата по QR',['Нажмите «Оплатить по QR»: откроется QR-код на точную сумму. Откройте его в приложении банка на этом телефоне или отсканируйте с другого.','Сумма уже включает неустойку, если есть просрочка. Срок действия по московскому времени указан рядом с QR. После истечения срока создайте новый код.','Оплата отметится в приложении сама, обычно в течение минуты. Ничего подтверждать не нужно.','Если банк не открылся, сохраните QR в галерею и загрузите картинку в приложении банка в разделе «Оплата по QR».']],
 bill:['Выставленный платёж',['Вам выставили платёж на конкретную сумму. Его можно оплатить по QR, он отметится сам.','Если сумма меньше полного платежа за период, остаток станет долгом: срок и неустойка будут указаны в карточке долга.']],
-def:()=>['Отсрочка',[`Ближайший взнос можно внести на ${ME.dd} ${dayWord(ME.dd)} позже. В графике вы увидите исходную дату взноса и отдельный срок отсрочки. Остальные взносы идут по графику.`,'Неустойка по этому взносу начнёт начисляться после срока отсрочки. Воспользоваться отсрочкой можно один раз за выкуп до появления просрочки.']],
+def:d=>['Отсрочка платежа',[`До просрочки ближайший платёж можно отложить на ${ME.dd} ${dayWord(ME.dd)}.`,
+    `За выкуп доступно ${deferralLimit()} ${plur(deferralLimit(),'отсрочка','отсрочки','отсрочек')}. Осталось ${remainingDeferrals(d)}.`,
+    'Неустойка начисляется со следующего дня после окончания отсрочки.']],
 debt:d=>{const r=String(d.pen==null?0.9:d.pen).replace('.',',');return['Остаток и срок',['Вы внесли часть платежа, а оставшаяся часть стала долгом. До указанной даты его можно внести без неустойки.',`После этой даты за каждый день просрочки начисляется неустойка: ${r}% в день от остатка. Сумма в карточке указана на сегодня, завтра она будет больше.`,'Пока долг не закрыт, следующий платёж можно вносить только целиком, а не частями. Долг можно закрыть сразу или частями: сначала платится неустойка, потом остаток.']]}};
 function cInfo(k){if(k=='multi'||k=='part')return paymentHelp(k);const d=currentClientDeal(),c=CI[k],[t,P]=typeof c=='function'?c(d):c;
 sheet(`<h3>${esc(t)}</h3>${P.map(x=>`<p style="margin:10px 0 0;font-size:15px;line-height:1.4">${esc(x)}</p>`).join('')}<button class="btn blk" data-y>Понятно</button>`,(o,x)=>o.querySelector('[data-y]').onclick=()=>x())}
-const qb=k=>`<button type=button class=qi aria-label="Как это работает" onclick="cInfo('${k}')">?</button>`;
+const qb=(k,label='Как это работает')=>`<button type=button class=qi aria-label="${esc(label)}" onclick="cInfo('${k}')">?</button>`;
+const deferralLimit=()=>ME.defer_limit??1;
+const remainingDeferrals=d=>Math.max(0,deferralLimit()-(d?.defer||[]).filter(z=>z.by=='client').length);
 async function defAsk(id){
-    const d=dealById(id),row=info(d).x;if(!row)return;
+    const d=dealById(id),row=info(d).x;if(!row||!remainingDeferrals(d))return;
     const until=C.add(C.deadline(d,row),ME.dd);
-    if(!await uiConfirm(`Взнос ${m(row.amt)} по графику до ${fmt(row.due)} можно будет внести до ${fmt(until)} включительно. Отсрочка доступна один раз за выкуп.`,'Взять отсрочку',{title:'Отсрочка одного взноса'}))return;
-    try{await api('/api/defer',{id});await refreshAccount();toast('Отсрочка оформлена')}catch(error){uiAlert(error.message||error)}
+    if(!await uiConfirm(`Платёж ${m(row.amt)} можно будет внести до ${fmt(until)} включительно.`,'Отсрочить',{title:'Отсрочка платежа'}))return;
+    try{await api('/api/defer',{id,version:d._v||0});await refreshAccount();toast('Отсрочка оформлена')}catch(error){uiAlert(error.message||error)}
 }
 async function claim(tok){try{await api('/api/claim',{tok,phone:v('#ph')});location.reload()}catch(e){uiAlert('Проверьте номер телефона и ссылку. Номер должен совпадать с тем, который вы называли при оформлении выкупа.','Не удалось войти')}}
 function clientUI(){$('#nav').style.display='none';if(ME.role=='new'&&startParam().startsWith('q_')){quickClaim(startParam());return}
@@ -1557,10 +2124,11 @@ const el=$('#app'),active=ME.deals.filter(x=>x.status=='active'),screen=CV[CV.le
 const select=screen=='main'&&active.length>1?`<label class="card fld"><span>Выберите выкуп</span><select onchange="selectClientDeal(this.value)">${active.map(x=>`<option value="${x.id}" ${x.id==d.id?'selected':''}>${esc(x.bike)}${x.contract?' · договор '+esc(x.contract):''}</option>`).join('')}</select></label>`:'';
 el.innerHTML=select+({main:cmain,sch:csch,hist:chist})[screen](d);el.className='';if(navDir){void el.offsetWidth;el.className=navDir}navDir='';scrollTo(0,0);chrome();completionPopup(d)}
 const DEBT=(g,d)=>`<div class="cn hq${g.over?' over':''}">${qb('debt')}<div class=tag>${ic('alert','s')}${g.over?`Долг просрочен на ${g.late} ${dayWord(g.late)}`:`Долг по периоду ${g.k}`}</div><div class=big>${m(g.total)}</div><div style="font-size:18px;font-weight:650;margin-top:2px">${g.pen?`${m(g.amt)} + неустойка ${m(g.pen)}`:g.over?'неустойка сейчас не начисляется':`внести до ${fmt(g.due)}`}</div><div class=mu style="margin-top:4px">${g.over?`Срок без неустойки был до ${fmt(g.due)}`:'До этой даты неустойка не начисляется'}</div>${g.over?`<button class=un onclick="penaltySheet('${d.id}','debt')">Расчёт неустойки</button>`:''}${ME.qr?`<div class=cq>${cQRb('debt',d,0,'',`Доплатить по QR · ${m(g.total)}`)}</div>`:''}</div>`;
-const contact=()=>{const c=ME.ct||{};
+const contact=(withHistory=false)=>{const c=ME.ct||{};
+    const history=withHistory?`<div class=tw><button class=tl onclick="cgo('hist')"><span class=gl>${ic('clock')}</span><span>История оплат</span>${ic('right')}</button>${qb('hist')}</div>`:'';
     const message=(key,label)=>c[key]?`<button class=tl onclick="cWrite('${key}')"><span class=gl>${ic('send')}</span><span>${label}</span>${ic('right','s')}</button>`:'';
     const phone=/^\+?\d{7,15}$/.test(c.phone||'')?`<a class=tl href="tel:${c.phone}"><span class=gl>${ic('phone')}</span><span>Позвонить</span>${ic('right','s')}</a>`:'';
-    return c.mx||c.tg||phone?`<div class="cp contact-links">${message('mx','Написать в МАКС')}${message('tg','Написать в Telegram')}${phone}</div>`:'';
+    return history||c.mx||c.tg||phone?`<div class="cp contact-links">${history}${message('mx','Написать в МАКС')}${message('tg','Написать в Telegram')}${phone}</div>`:'';
 };
 function cWrite(k){const u=(ME.ct||{})[k];if(!u)return;hap();if(/^https:\/\/(t|telegram)\.me\//i.test(u)&&T.openTelegramLink)T.openTelegramLink(u);else if(T.openLink)T.openLink(u);else window.open(u,'_blank')}
 const bills=d=>ME.deals&&d.status=='active'?(ME.bills||[]).filter(b=>b.deal==d.id).map(b=>`<div class="cn bl">${qb('bill')}<div class=tag>${ic('receipt','s')}Вам выставлен платёж</div><div class=big>${m(b.amt)}</div><div class=mu style="margin-top:4px">${b.kind=='debt'?'В счёт долга':'За период'}${ME.qr?'':'. Оплатите, как договорились'}</div>${ME.qr?`<div class=cq>${cQRb('bill',d,b.id,'',`Оплатить по QR · ${m(b.amt)}`)}</div>`:''}</div>`).join(''):'';
@@ -1568,14 +2136,14 @@ function cmain(d){const I=info(d),t=C.today(),x=I.x,k=I.sc.length-I.un.length,on
 if(!on){tn='n';tx=d.status=='archived'?'Выкуп завершён. Поздравляем!':'Выкуп закрыт';icn='flag'}
 else if(I.done)tx='Все платежи внесены. Ждём вас для подписания документов.';
 else{const n=x?C.diff(limit,t):1,g=I.g;if(n<0){tn='dr';tx=`Просрочка ${-n} ${dayWord(-n)}${I.pen?`. Неустойка ${m(I.pen)}`:''}`;icn='alert'}else if(g){nb=1}else if(n==0){tn='wd';tx='Сегодня день оплаты';icn='alert'}else if(n<=2){tn='wa';tx=n==1?'Завтра оплата':'Оплата через 2 дня';icn='clock'}}
-const dn=x?C.diff(limit,t):9,can2=on&&x&&!(d.defer||[]).some(z=>z.by=='client')&&!I.od.length&&!(I.g&&I.g.over);
+const dn=x?C.diff(limit,t):9,canDefer=remainingDeferrals(d)>0&&!I.od.length&&!(I.g&&I.g.over);
 const grants=on?I.un.filter(row=>C.deadline(d,row)>row.due&&C.deadline(d,row)>=t).map(row=>`<div class="note t-wa">${ic('clock','s')}<div><b>Отсрочка до ${fmt(C.deadline(d,row))}</b><br>${per(d,row)} · ${m(row.amt)}</div></div>`).join(''):'';
 return `<div class="hd"><div><small>${esc(d.bike||'Электровелосипед')}</small><h1>Мой выкуп</h1></div></div>${nb?'':`<div class="cb t-${tn}"><span class=gl>${ic(icn)}</span><span>${esc(tx)}</span></div>`}
 ${completionCard(d)}${clientRequestState(d)}${grants}${bills(d)}${I.g&&on?DEBT(I.g,d):''}
 <div class=cw>${whw(states(d),{size:236,sw:20,round:true,gap:4,an:true},`<span class=k>${k}</span><small>из ${I.sc.length} платежей</small>`)}</div>
 ${x&&on?(I.od.length?`<button class="cn owe" onclick="oweSheet('${d.id}')"><div class=mu>К оплате сейчас</div><div class=big>${m(I.owe)}</div><div style="font-size:18px;font-weight:650;margin-top:2px">${oweSub(I)}</div><div class=hint>Что входит в сумму${ic('right','s')}</div></button>`:`<div class="cn nx ${dn>=3?'g':dn==2?'y1':dn==1?'y2':'y3'}"><div class=mu>Следующий платёж</div><div class=big>${m(x.amt)}</div><div style="font-size:18px;font-weight:650;margin-top:2px">до ${fmt(limit)}</div>${nb&&dn<=2?`<div class=nxs>${dn==0?'Сегодня день оплаты':dn==1?'Завтра оплата':'Оплата через 2 дня'}</div>`:''}<div class=mu style="margin-top:4px">${per(d,x)}</div></div>`):''}
 ${x&&on?`<div class=cq2><button class="btn blk lg" onclick="paymentOptions('${d.id}')">${ic('receipt','s')}Выбрать оплату</button>${qb('qr')}</div>`:''}
-<div class=cp><div class=tw><button class=tl onclick="cgo('sch')"><span class=gl>${ic('cal')}</span><span>График платежей</span>${ic('right')}</button>${qb('sch')}</div><div class=tw><button class=tl onclick="cgo('hist')"><span class=gl>${ic('clock')}</span><span>История оплат</span>${ic('right')}</button>${qb('hist')}</div>${can2?`<div class=tw><button class=tl onclick="defAsk('${d.id}')"><span class=gl>${ic('bolt')}</span><span>Отсрочка на ${ME.dd} ${dayWord(ME.dd)}</span>${ic('right')}</button>${qb('def')}</div>`:''}</div>${scheduleRequestButton(d)}${clientPaymentReports(d.id)}${contact()}`}
+<div class=cp><div class=tw><button class=tl onclick="cgo('sch')"><span class=gl>${ic('cal')}</span><span>График платежей</span>${ic('right')}</button>${qb('sch')}</div>${on&&x?`<div class=tw><button class=tl onclick="defAsk('${d.id}')" ${canDefer?'':'disabled'}><span class=gl>${ic('bolt')}</span><span>Отсрочить платёж</span>${ic('right')}</button>${qb('def','Условия отсрочки')}</div>`:''}</div>${scheduleRequestButton(d)}${clientPaymentReports(d.id)}${contact(true)}`}
 function csch(d){
     const I=info(d),on=d.status=='active',O=new Map(on?I.ods.map(o=>[o.k,o]):[]),t=C.today();
     const canExport=on&&(I.un.some(row=>C.deadline(d,row)>=t)||(I.g&&!I.g.over));
@@ -1590,11 +2158,12 @@ function csch(d){
 const chist=d=>{const L=Object.entries(d.paid).map(([k,p])=>({date:p.date,a:m(p.amt+(p.pen||0)),s:`период ${periodNumber(d,k)}${p.part?' (часть)':''}, ${esc(p.method)}${p.pen?`, неустойка ${m(p.pen)}`:''}`})).concat((d.dpays||[]).map(z=>({date:z.date,a:m(z.amt+(z.pen||0)),s:`долг по периоду ${periodNumber(d,z.k)}, ${esc(z.method)}${z.pen?`, неустойка ${m(z.pen)}`:''}`}))).concat((d.early||[]).map(e=>({date:e.date,a:m(e.paid||e.amt),s:`${e.kind=='move-credit'?'Переплата после переноса':'досрочный платёж'}, ${esc(e.method)}`}))).concat((d.bonuses||[]).map(b=>({date:b.date,a:'−'+m(b.amt),s:`скидка ${pc(b.rate)}% с конца графика`}))).sort((a,b)=>a.date<b.date?1:-1);
 return `${cBack()}<div class=hd><h1>История оплат</h1></div>`+(L.length?`<div class=grp>${L.map(e=>`<div class="row nl" style="cursor:default"><span class=tx><b>${e.a}</b><span>${fmt(e.date)}, ${e.s}</span></span></div>`).join('')}</div>`:empty('clock','Платежей пока нет'))+`<div class=acts><button class="btn sec blk" onclick="submitPaymentReport('${d.id}')">Я оплатил, но платёж не появился</button></div>${clientPaymentReports(d.id)}`};
 /* ---------- start */
-async function soft(){try{await load(true);const s=V[V.length-1][0];if((V.length==1&&['home','base','rep'].includes(s))||s=='deal')render(true)}catch(e){}}
+async function soft(){try{await load(true);const [s]=V[V.length-1];if((V.length==1&&['home','base','rep'].includes(s))||s=='deal')render(true);
+else if(s=='calcS')updC()}catch(e){}}
 document.addEventListener('visibilitychange',()=>{if(document.hidden||!ME)return;
 if(ME.role=='owner')refreshMe();
 if((ME.role=='owner'||ME.role=='admin')&&Date.now()-lastLoad>30000)soft();
-if(ME.role=='client'&&Date.now()-lastLoad>30000)api('/api/me').then(r=>{if(r.role=='client'){ME=r;lastLoad=Date.now();if(CV.length==1)crender()}}).catch(()=>{})});
+if(ME.role=='client')refreshClientAccount().catch(()=>{})});
 async function boot(){try{ME=await api('/api/me')}catch(e){return center('lock','Не удалось войти','Откройте приложение из Telegram по ссылке для входа, которую вам прислали.\n('+e+')')}
 if(ME.role=='owner'||ME.role=='admin'){try{await load(true)}catch(e){return center('lock','Нет связи','Не удалось загрузить данные. Закройте приложение и откройте снова.\n('+e+')')}$('#nav').style.display='';render()}
 else if(ME.role=='off')center('lock','Доступ отключён','Свяжитесь с нами.');
