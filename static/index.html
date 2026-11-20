@@ -624,7 +624,8 @@ function termOpts(){
     if(terms.some(term=>term.weeks==previous))select.value=String(previous);
 }
 function dealIn(){
-    const bike=chosenBike(),weeks=+v('#n'),batteries=bike?.batteries??1,weekly=S.cfg.tariffs?.[C.tariffKey(bike?.model,batteries)]?.[weeks];
+    const bike=chosenBike(),weeks=+v('#n'),batteries=bike?.batteries??1;
+    const weekly=tariffTerms(bike?.model,batteries).find(term=>term.weeks===weeks)?.weekly;
     if(!bike||!v('#c')||!weekly)return null;
     return {cost:bike.cost,type:'w',n:weeks,weekly,down:+v('#dn')||0,tax:S.cfg.tax,acq:S.cfg.acq,receipt:S.cfg.receipt,
         tariff:{model:bike.model,batteries,weeks,weekly}};
@@ -1291,7 +1292,7 @@ function set(){
         <button class="btn sec" onclick="$('#rf').click()">${ic('up','s')}Восстановить</button></div>
         <input id=rf type=file accept=".json,application/json" hidden onchange="restoreFile(this)"></div>`;
     const log=`<div class=grp><button class="row nl" onclick="go('logS')"><span class=gl>${ic('list')}</span><span class=tx><b>Открыть журнал действий</b><span>Кто и что менял</span></span>${ic('right')}</button></div>`;
-    return `<div class=hd><div><small>Версия 12</small><h1>Настройки</h1></div></div>`
+    return `<div class=hd><div><small>Версия 13</small><h1>Настройки</h1></div></div>`
         +tariffs
         +settingSection('payments','Платежи, отсрочка и неустойка',payments)
         +settingSection('fees','Налог и комиссии',fees)
@@ -1491,7 +1492,7 @@ function journalFields(data,kind,action){
     (data.exp||[]).forEach((expense,index)=>set(`Расход ${index+1}`,expense,value=>[value.date&&journalDate(value.date),m(value.amt),value.text].filter(Boolean).join(' · ')));
     for(const {key,name} of configurations){
         const rates=data.tariffs?.[key]||{};
-        for(const [weeks,weekly] of Object.entries(rates))set(`${name} · ${weeks} нед.`,weekly,m);
+        for(const weeks of C.WEEKLY_TERMS)set(`${name} · ${weeks} нед.`,rates[weeks],m);
         set(`Закупка · ${name}`,data.purchaseCosts?.[key],m);
     }
     if(isDeal&&data.start&&data.type){

@@ -2,7 +2,7 @@
 const MK={w:{8:30,12:42,16:55,20:68,26:88},m:{2:30,3:42,4:55,5:68,6:88}},DS={30000:2,50000:4};
 const BIKE_MODELS={monster:'Монстр',u2:'U2',u2pro:'U2 Pro'};
 const BATTERY_COUNTS=[1,2];
-const WEEKLY_TERMS=[8,12,16,20,22,26];
+const WEEKLY_TERMS=[8,12,16,20,26];
 const tariffKey=(model,batteries=1)=>batteries===2?model+'-2-akb':model;
 const up=(x,s)=>Math.ceil(x/s-1e-9)*s;
 function add(d,n){const t=new Date(d+'T00:00:00Z');t.setUTCDate(t.getUTCDate()+n);return t.toISOString().slice(0,10)}
