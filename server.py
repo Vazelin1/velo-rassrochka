@@ -1,20 +1,26 @@
-import os,re,json,hmac,hashlib,sqlite3,threading,time,secrets,math,copy,urllib.request,urllib.error,urllib.parse,datetime as dt
+import os,re,json,hmac,hashlib,sqlite3,threading,time,secrets,math,copy,base64,binascii,csv,io,zipfile,tempfile,urllib.request,urllib.error,urllib.parse,datetime as dt
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from xml.etree import ElementTree as ET
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 TOK=os.environ['BOT_TOKEN'];OWNER=int(os.environ['OWNER_ID'])
 MSK=dt.timezone(dt.timedelta(hours=3));L=threading.Lock()
+QR_LOCKS=tuple(threading.Lock() for _ in range(64))
 TQB=os.environ.get('TOCHKA_BASE','https://enter.tochka.com/uapi');MOCK=os.environ.get('TOCHKA_MOCK')=='1'
 IMG={}
-DATA=os.environ.get('DATA_DIR','/data');BK=DATA+'/backups';os.makedirs(BK,exist_ok=True);TGB=os.environ.get('TG_BASE','https://api.telegram.org')
+FILE_DL={}
+DATA=os.environ.get('DATA_DIR','/data');BK=DATA+'/backups';os.makedirs(BK,mode=0o700,exist_ok=True);TGB=os.environ.get('TG_BASE','https://api.telegram.org')
+BANK_SETTINGS=DATA+'/bank.json';MAX_BACKUP_BYTES=128*1024*1024
 db=sqlite3.connect(DATA+'/app.db',check_same_thread=False)
 db.executescript("create table if not exists docs(id text primary key,kind text,data text);create table if not exists log(ts text,act text,id text,old text,new text);create table if not exists inv(tok text primary key,client text,exp real);create table if not exists bind(tg integer primary key,client text);create table if not exists ntf(k text primary key)")
+db.execute('create table if not exists notice_queue(k text primary key,day text,chat integer,body text,attempts integer,next real)')
 FAIL={};TRY={};BOT=[os.environ.get('BOT_USERNAME','').lstrip('@') or None]
 HD={'X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer','Strict-Transport-Security':'max-age=31536000',
-'Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self' https://*.telegram.org"}
-KINDS=('client','bike','deal','cfg','admin','qr','unk','bill','tch','reschedule')
-SRV=('qr','unk','bill','tch','reschedule')  # written only by the server's own actions, never through /api/put
+'Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'self' https://*.telegram.org"}
+KINDS=('client','bike','deal','cfg','admin','qr','unk','bill','tch','reschedule','paymentreport','statementlink')
+SRV=('qr','unk','bill','tch','reschedule','paymentreport','statementlink')
 PERMS=('pay','early','pen','clients','deals','bikes','reports')
 FINP={'deals','bikes','reports'}  # rights that let an administrator see prices, purchase costs and profit
-HID={'deal':('total','tax','acq','cost','disc','mk','extras','down','refund'),'bike':('cost','exp','wo')}
+HID={'deal':('total','tax','acq','receipt','cost','disc','mk','extras','down','refund','down_fees'),'bike':('cost','exp','wo')}
 PUBCFG=('id','dd','pen','dmin','dbd','multi_discount')
 ID=re.compile(r'[a-z0-9]{1,16}')
 NO=object()
@@ -43,7 +49,11 @@ def say(t):
 def tell(cid,t):
     if flag('ncli'):
         for (g,) in db.execute('select tg from bind where client=?',(cid,)).fetchall():push(g,t)
-def rub(n):return f'{round(n):,}'.replace(',',' ')+' ₽'
+def minor(n):return int((Decimal(str(n))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+def money(cents):return cents//100 if cents%100==0 else cents/100
+def rub(n):
+    cents=minor(n)
+    return f'{money(cents):,.{2 if cents%100 else 0}f}'.replace(',',' ').replace('.',',')+' ₽'
 def dm(d):return d.strftime('%d.%m.%Y')
 def botname():
     if not BOT[0]:
@@ -53,14 +63,24 @@ def botname():
 def row(i):
     r=db.execute('select kind,data from docs where id=?',(i,)).fetchone();return r and (r[0],json.loads(r[1]))
 def doc(i):
+    if i=='tch':
+        try:
+            with open(BANK_SETTINGS) as source:return json.load(source)
+        except FileNotFoundError:pass
     r=row(i);return r and r[1]
 def save(i,k,d):db.execute('insert or replace into docs values(?,?,?)',(i,k,json.dumps(d)))
 def D(s):return dt.date.fromisoformat(s)
 def digits(p):return re.sub(r'\D','',p or '')[-10:]
-def first_unpaid(d):
-    x=nxt(d)
-    return x and x['k']
-def due(d,k):return D(next(x['due'] for x in sched(d) if x['k']==k))
+def payment_deadline(d, installment):
+    return max([installment['due']] + [
+        grant['until'] for grant in d.get('defer') or []
+        if grant.get('k') == installment['k'] and grant.get('due') == installment['due'] and grant.get('until')
+    ])
+
+def unpaid_installments(d, schedule=None):
+    paid = d.get('paid') or {}
+    return sorted((x for x in (sched(d) if schedule is None else schedule) if str(x['k']) not in paid),
+                  key=lambda x: payment_deadline(d, x))
 def sched(d):
     """Payment schedule exactly as the app computes it (static/calc.js): due dates, and early payments shorten it from the end."""
     n=d['n'];paid=d.get('paid') or {};P=30 if d['type']=='m' else 7
@@ -78,16 +98,11 @@ def sched(d):
         payment=paid.get(str(x['k']))
         if payment and not payment.get('part'):x['amt']=payment['amt']
     return [x for x in r if x['amt']>0 or str(x['k']) in paid]
-def nxt(d):
-    p=d.get('paid') or {}
-    for x in sched(d):
-        if str(x['k']) not in p:return x
 def due_today(ds,t):
     c=0
     for d in ds:
         if d.get('status')!='active':continue
-        x=nxt(d)
-        if x and due(d,x['k'])==t:c+=1
+        if any(payment_deadline(d,x)==str(t) for x in unpaid_installments(d)):c+=1
     return c
 def notify_deal(old,new,ro,adm):
     """Messages after a deal was saved by the owner or an administrator. Call with the lock held."""
@@ -107,25 +122,39 @@ def notify_deal(old,new,ro,adm):
             e=new['dpays'][-1];say(f"Оплата долга принята ({adm}): {cn}, {rub((e.get('amt') or 0)+(e.get('pen') or 0))}, {e.get('method','')}."+(" Долг закрыт." if not (g and g.get('amt')>0) else f" Остаток долга: {rub(g['amt'])}."))
         if len(new.get('early') or [])>len(old.get('early') or []):
             e=new['early'][-1];say(f"Досрочный платёж принят ({adm}): {cn}, {rub(e.get('paid') or e.get('amt') or 0)}.")
-    if (new.get('shift') or 0)>(old.get('shift') or 0) and new.get('status')=='active':
-        defer_msg(new)
-def defer_msg(d):
-    x=nxt(d)
-    if x:tell(d.get('client'),f"Отсрочка оформлена. Ближайший платёж {rub(x['amt'])} теперь до {dm(due(d,x['k']))}.")
 def safe_link(v):
     """A link to the owner's Telegram / Max account for the client screen: only plain https links are passed on."""
     v=str(v or '').strip()
     return v if re.fullmatch(r'https://[^\s<>"\'\\]{3,300}',v) else ''
+
+def safe_phone(value):
+    number = re.sub(r'[^+0-9]', '', str(value or ''))
+    return number if re.fullmatch(r'\+?[0-9]{7,15}', number) else ''
+
+def payment_public(deal):
+    """Fees, reconciliation references and internal notes stay in the staff view."""
+    def public(p):
+        return {k: v for k, v in p.items() if k not in ('fees', 'source')}
+    return {k: deal.get(k) for k in (
+        'n','start','pay','last','shift','defer','pen','status','contract','type','debt','pw','np',
+        'schedule','bonuses','completed_at','closed','signed_at','client_rescheduled','_v',
+    )} | {
+        'paid': {k: public(p) for k,p in (deal.get('paid') or {}).items()},
+        'early': [public(p) for p in deal.get('early') or []],
+        'dpays': [public(p) for p in deal.get('dpays') or []],
+    }
+
 def mine(cid):
     c=doc(cid) or {};out=[]
     for i,d in db.execute("select id,data from docs where kind='deal'").fetchall():
         d=json.loads(d)
         if d['client']==cid:
-            out.append({k:d.get(k) for k in('n','start','pay','last','paid','early','shift','defer','pen','status','contract','type','debt','dpays','pw','np','schedule','bonuses','completed_at','closed','signed_at','_v')}|{'id':i,'bike':(doc(d['bike']) or {}).get('name','')})
+            out.append(payment_public(d)|{'id':i,'bike':(doc(d['bike']) or {}).get('name','')})
     ids={o['id'] for o in out};bills=[{'id':i,'deal':z['deal'],'amt':z['amt'],'kind':z['kind'],'ts':z.get('ts')} for i,z in docs_of('bill') if z.get('status')=='open' and z.get('deal') in ids]
     cf=doc('cfg') or {}
     requests=[{**z,'id':i} for i,z in docs_of('reschedule') if z.get('deal') in ids]
-    return {'role':'client','name':c.get('name',''),'deals':out,'requests':requests,'dd':cf.get('dd',2),'dmin':max(50,cf.get('dmin',50)),'dbd':cf.get('dbd',3),'multi_discount':cf.get('multi_discount',1.5),'qr':bool(tq()),'bills':bills,'ct':{'tg':safe_link(cf.get('ctg')),'mx':safe_link(cf.get('cmx'))}}
+    reports = [{**payment_report_summary(z), 'id': i} for i,z in docs_of('paymentreport') if z.get('deal') in ids and z.get('client')==cid]
+    return {'role':'client','name':c.get('name',''),'deals':out,'requests':requests,'paymentreports':reports,'dd':cf.get('dd',2),'dmin':max(50,cf.get('dmin',50)),'dbd':cf.get('dbd',3),'multi_discount':cf.get('multi_discount',1.5),'qr':bool(tq()),'bills':bills,'ct':{'tg':safe_link(cf.get('ctg')),'mx':safe_link(cf.get('cmx')),'phone':safe_phone(cf.get('cphone'))}}
 def adm_of(u):
     """The administrator whose Telegram ID is u: (id, data) or None."""
     for i,d in db.execute("select id,data from docs where kind='admin'").fetchall():
@@ -142,7 +171,12 @@ def vw(k,d,f):
     """Document as an administrator without financial rights may see it."""
     if f:return d
     if k=='cfg':return {x:y for x,y in d.items() if x in PUBCFG}
-    return {x:y for x,y in d.items() if x not in HID.get(k,())}
+    out = {x:y for x,y in d.items() if x not in HID.get(k,())}
+    if k == 'deal':
+        for field in ('paid','early','dpays'):
+            if field in d:
+                out[field] = payment_public(d)[field]
+    return out
 def okkey(P,k,x,m):
     """May an administrator with rights P change field x of a document of kind k?"""
     if k=='deal':
@@ -167,6 +201,12 @@ def amerge(P,k,old,new):
     m={x:y for x,y in new.items() if x not in hid}
     for x in hid:
         if x in old:m[x]=old[x]
+    if k=='deal' and hid:
+        for kind,key,payment in receipt_parts(m):
+            previous=receipt_part(old,kind,key)
+            if previous and receipt_cash(previous,kind)==receipt_cash(payment,kind):
+                for field in ('fees','source'):
+                    if field in previous:payment[field]=previous[field]
     for x in set(m)|set(old):
         if x=='_v' or m.get(x,NO)==old.get(x,NO):continue
         if not okkey(P,k,x,m):return None
@@ -174,7 +214,7 @@ def amerge(P,k,old,new):
 def dump():
     with L:
         return json.dumps({'v':1,'ts':dt.datetime.now(MSK).isoformat(),'docs':[{'id':i,'kind':k,'data':json.loads(x)} for i,k,x in db.execute("select id,kind,data from docs where kind!='tch'")],
-        'bind':[[a,c] for a,c in db.execute('select tg,client from bind')],'log':[list(r) for r in db.execute('select ts,act,id,old,new from log')]},ensure_ascii=False).encode()
+        'bind':[[a,c] for a,c in db.execute('select tg,client from bind')],'log':[list(r) for r in db.execute("select ts,act,id,old,new from log where id!='tch'")]},ensure_ascii=False).encode()
 DL={};TTL=int(os.environ.get('DL_TTL','120'));BS=DATA+'/last_download.json'
 def bget():
     try:return json.load(open(BS))
@@ -183,29 +223,125 @@ def bset():
     try:open(BS,'w').write(json.dumps({'ts':dt.datetime.now(MSK).isoformat()}))
     except Exception as e:print('bset',e)
 def snap(pre):
-    b=sqlite3.connect(f'{BK}/{pre}-{dt.datetime.now(MSK):%Y-%m-%d-%H%M%S}.db');db.backup(b);b.close()
-    for f in sorted(x for x in os.listdir(BK) if x.startswith(pre+'-'))[:-(30 if pre=='app' else 5)]:os.remove(f'{BK}/{f}')
+    os.chmod(BK,0o700)
+    fd,name=tempfile.mkstemp(dir=BK,prefix='.snapshot-');os.close(fd)
+    try:
+        backup=sqlite3.connect(name)
+        try:
+            db.backup(backup)
+            backup.execute('pragma secure_delete=on')
+            with backup:
+                backup.execute("delete from docs where kind='tch'")
+                backup.execute("delete from log where id='tch'")
+            backup.execute('vacuum')
+        finally:backup.close()
+        os.replace(name,f'{BK}/{pre}-{dt.datetime.now(MSK):%Y-%m-%d-%H%M%S-%f}.db')
+    finally:
+        if os.path.exists(name):os.remove(name)
+    for f in sorted(x for x in os.listdir(BK) if x.startswith(pre+'-') and x.endswith('.db'))[:-(30 if pre=='app' else 5)]:os.remove(f'{BK}/{f}')
+
+def save_bank_settings(settings):
+    fd,name=tempfile.mkstemp(dir=DATA,prefix='.bank-')
+    try:
+        with os.fdopen(fd,'w') as target:
+            json.dump(settings,target)
+            target.flush();os.fsync(target.fileno())
+        os.replace(name,BANK_SETTINGS)
+    finally:
+        if os.path.exists(name):os.remove(name)
+
+def validate_backup(records,bindings):
+    def require(identifier,kind):
+        if not isinstance(identifier,str) or identifier not in records or records[identifier][0]!=kind:
+            raise Bad(f'В копии отсутствует связанная запись {kind} ({identifier}).')
+    def amount(value):
+        if not isinstance(value,(int,float)) or isinstance(value,bool) or not math.isfinite(value):
+            raise Bad('В копии есть некорректная сумма.')
+    def objects(data,field):
+        value=data.get(field)
+        if value is None:return []
+        if not isinstance(value,list) or not all(isinstance(x,dict) for x in value):
+            raise Bad(f'В копии повреждён раздел {field}.')
+        return value
+    for identifier,(kind,data) in records.items():
+        if kind=='deal':
+            require(data.get('client'),'client');require(data.get('bike'),'bike')
+            valid_date(data.get('start'))
+            if data.get('type') not in ('w','m') or type(data.get('n')) is not int or not 1<=data['n']<=5200 or data.get('status') not in ('active','archived','seized','lost'):
+                raise Bad(f'В копии повреждён график выкупа {identifier}.')
+            for field in ('pay','last'):amount(data.get(field))
+            if not isinstance(data.get('paid'),dict):raise Bad(f'В копии повреждены оплаты выкупа {identifier}.')
+            for field in ('dpays','early','bonuses','extras'):objects(data,field)
+            for swap in objects(data,'swaps'):
+                require(swap.get('from'),'bike');valid_date(swap.get('date'))
+                if swap.get('to'):require(swap['to'],'bike')
+            for grant in objects(data,'defer'):
+                valid_date(grant.get('due'));valid_date(grant.get('until'))
+            keys=set()
+            for x in objects(data,'schedule'):
+                if type(x.get('k')) is not int or x['k']<=0 or x['k'] in keys:raise Bad('В копии неверные номера взносов.')
+                keys.add(x['k']);valid_date(x.get('due'));amount(x.get('amt'))
+                if x['amt']<0:raise Bad('В копии отрицательная сумма взноса.')
+            for _,key,payment in receipt_parts(data):
+                if not isinstance(payment,dict):raise Bad('Повреждена запись об оплате.')
+                valid_date(payment.get('date'));amount(payment.get('amt'));amount(payment.get('pen',0) or 0)
+                if payment.get('due'):valid_date(payment['due'])
+            if data.get('debt'):
+                valid_date(data['debt'].get('due'));amount(data['debt'].get('amt'))
+                if data['debt'].get('pb'):valid_date(data['debt']['pb'])
+            if data.get('pen') is not None:amount(data['pen'])
+            for interval in data.get('np') or []:
+                valid_date(interval[0])
+                if interval[1]:valid_date(interval[1])
+            info(data);payment_public(data)
+        elif kind in SRV:
+            require(data.get('deal'),'deal')
+            if kind in ('reschedule','paymentreport'):require(data.get('client'),'client')
+            if kind in ('qr','statementlink','paymentreport'):valid_date(data.get('date'))
+            if kind=='qr':qr_expiry(data)
+        elif kind in ('client','bike','admin'):
+            if not isinstance(data.get('name'),str):raise Bad(f'В копии отсутствует имя записи {identifier}.')
+            if kind=='bike':
+                if 'cost' in data:amount(data['cost'])
+                for expense in objects(data,'exp'):
+                    valid_date(expense.get('date'));amount(expense.get('amt'))
+                if data.get('wo'):
+                    valid_date(data['wo'].get('date'));amount(data['wo'].get('loss',0))
+        elif kind=='cfg':
+            if data.get('mk') and not isinstance(data['mk'].get('w'),dict):raise Bad('В копии повреждены тарифы.')
+            if data.get('ds') and not all(isinstance(x,list) and len(x)==2 for x in data['ds']):raise Bad('В копии повреждены скидки.')
+            for field in ('pen','tax','dmin','dd','dbd','multi_discount','receipt','acq'):
+                if data.get(field) is not None:amount(data[field])
+    seen=set()
+    for tg_id,client in bindings:
+        if type(tg_id) is not int or tg_id<=0 or tg_id in seen:raise Bad('В копии повреждены привязки Telegram.')
+        require(client,'client');seen.add(tg_id)
 def restore(b):
     """returns (code, reply). Replaces docs and bind with the backup content; the audit log is kept."""
     try:
         if not isinstance(b,dict) or b.get('v')!=1:return 400,'Это не файл копии (или файл от другой версии).'
         docs=b['docs'];bind=b.get('bind',[]);lg=b.get('log',[])
-        if not isinstance(docs,list) or not isinstance(bind,list) or not isinstance(lg,list) or len(docs)>20000:return 400,'Файл повреждён.'
-        seen=set();rows=[]
+        if not isinstance(docs,list) or not isinstance(bind,list) or not isinstance(lg,list):return 400,'Файл повреждён.'
+        records={}
         for x in docs:
             i,k,d=x['id'],x['kind'],x['data']
             if k=='tch':continue
-            if not isinstance(i,str) or not ID.fullmatch(i) or k not in KINDS or not isinstance(d,dict) or i in seen:return 400,'Файл повреждён: неверная запись.'
-            seen.add(i);rows.append((i,k,json.dumps(d)))
-        bi=[(int(a),str(c)) for a,c in bind if ID.fullmatch(str(c))]
-        lg=[tuple(None if y is None else str(y) for y in r) for r in lg if isinstance(r,list) and len(r)==5][-100000:]
+            if not isinstance(i,str) or not ID.fullmatch(i) or k not in KINDS or not isinstance(d,dict) or i in records:return 400,'Файл повреждён: неверная запись.'
+            records[i]=(k,d)
+        validate_backup(records,bind)
+        rows=[(i,k,json.dumps(d,allow_nan=False)) for i,(k,d) in records.items()]
+        lg=[tuple(None if y is None else str(y) for y in r) for r in lg if isinstance(r,list) and len(r)==5 and r[2]!='tch'][-100000:]
+    except Bad as e:return 400,str(e)
     except Exception:return 400,'Файл повреждён.'
     with L:
-        snap('pre-restore')
         try:
+            snap('pre-restore')
             empty=not db.execute('select 1 from log limit 1').fetchone();keep=db.execute("select id,kind,data from docs where kind='tch'").fetchall()
             db.execute('delete from docs');db.execute('delete from bind');db.execute('delete from inv')
-            db.executemany('insert into docs values(?,?,?)',rows+[tuple(z) for z in keep]);db.executemany('insert or replace into bind values(?,?)',bi)
+            db.execute('delete from notice_queue')
+            db.executemany('insert into docs values(?,?,?)',rows+keep);db.executemany('insert into bind values(?,?)',bind)
+            migrate_fee_records()
+            if bind:mine(bind[0][1])
             if empty:db.executemany('insert into log values(?,?,?,?,?)',lg)
             db.execute('insert into log values(?,?,?,?,?)',(dt.datetime.now(MSK).isoformat(),'restore','',None,json.dumps({'docs':len(rows),'from':b.get('ts')})));db.commit()
         except Exception as e:
@@ -225,7 +361,50 @@ def tod():return dt.datetime.now(MSK).date().isoformat()
 def nid():return secrets.token_hex(6)
 def cfgv(k,dflt):
     v=(doc('cfg') or {}).get(k);return dflt if v is None else v
-def penalty(a,days,r):return int(math.floor(a*(0.9 if r is None else r)/100*days+0.5))
+
+def receipt_parts(d):
+    yield from (('paid',k,p) for k,p in (d.get('paid') or {}).items())
+    for kind in ('early','dpays'):
+        yield from ((kind,k,p) for k,p in enumerate(d.get(kind) or []))
+
+def receipt_part(d,kind,key):
+    records=d.get(kind) or ({} if kind=='paid' else [])
+    return records.get(key) if kind=='paid' else records[key] if key<len(records) else None
+
+def receipt_cash(p,kind):
+    return (p.get('date'),p.get('method'),p.get('paid',p.get('amt')) if kind=='early' else p.get('amt',0)+(p.get('pen') or 0))
+
+def fee_rates(method,estimated=False):
+    def rate(name):
+        try:v=float(cfgv(name,0))
+        except (ValueError,TypeError):return 0
+        return v if math.isfinite(v) and 0<=v<=100 else 0
+    values={k:rate(k) if method=='СБП' else 0 for k in ('acq','receipt')}
+    if estimated and method=='СБП':values['estimated']=True
+    return values
+
+def stamp_receipts(d,old=None,legacy=False):
+    for kind,key,payment in receipt_parts(d):
+        previous=receipt_part(old or {},kind,key)
+        same=previous and receipt_cash(previous,kind)==receipt_cash(payment,kind)
+        source=(payment.get('source') if legacy else (previous or {}).get('source') if same else None)
+        fees=(payment.get('fees') if legacy else (previous or {}).get('fees') if same else None)
+        if not source and legacy and kind=='paid':source=payment.get('group')
+        payment['source']=source or payment.get('qr') or nid()
+        payment['fees']=fees or fee_rates(payment.get('method'),estimated=legacy or bool(same))
+    if d.get('down'):
+        method=d.get('down_method') or ((d.get('paid') or {}).get('1') or {}).get('method')
+        previous=(old or {}).get('down_fees') if (old or {}).get('down')==d.get('down') else None
+        d['down_fees']=(d.get('down_fees') if legacy else previous) or fee_rates(method,estimated=legacy)
+        first=(d.get('paid') or {}).get('1') or {}
+        if old is None and not legacy and first.get('method')==method and first.get('date')==d['start']:
+            d['down_source']=first.get('source')
+
+def migrate_fee_records():
+    for i,d in docs_of('deal'):
+        if any(not p.get('fees') or not p.get('source') for _,_,p in receipt_parts(d)) or (d.get('down') and not d.get('down_fees')):
+            stamp_receipts(d,legacy=True);save(i,'deal',d)
+def penalty(a,days,r):return int(math.floor(a*max(0,0.9 if r is None else r)/100*days+0.5))
 def pdays(b,T,d):
     """Days of penalty from the last day without penalty b up to T (pw: written off on that date, np: periods when accrual is off)."""
     if d.get('pw') and d['pw']>b:b=d['pw']
@@ -239,14 +418,14 @@ def dstat(d,T):
     g=d.get('debt')
     if not g or not g.get('amt',0)>0:return None
     b=g['pb'] if g.get('pb') and g['pb']>g['due'] else g['due'];n=pdays(b,T,d);pe=penalty(g['amt'],n,d.get('pen'))
-    return {'amt':g['amt'],'due':g['due'],'k':g['k'],'days':n,'pen':pe,'total':g['amt']+pe,'late':max(0,diff(T,g['due'])),'over':T>g['due'],'base':b}
+    return {'amt':g['amt'],'due':g['due'],'k':g['k'],'days':n,'pen':pe,'total':money(minor(g['amt'])+minor(pe)),'late':max(0,diff(T,g['due'])),'over':T>g['due'],'base':b}
 def info(d,t=None):
-    t=t or tod();sc=sched(d);P=d.get('paid') or {};un=[x for x in sc if str(x['k']) not in P];od=[x for x in un if x['due']<t];ods=[]
+    t=t or tod();sc=sched(d);un=unpaid_installments(d,sc);od=[x for x in un if payment_deadline(d,x)<t];ods=[]
     for y in od:
-        n=pdays(y['due'],t,d);ods.append({**y,'days':n,'pen':penalty(y['amt'],n,d.get('pen'))})
+        n=pdays(payment_deadline(d,y),t,d);ods.append({**y,'days':n,'pen':penalty(y['amt'],n,d.get('pen'))})
     pe=sum(y['pen'] for y in ods);g=dstat(d,t)
     return {'sc':sc,'un':un,'x':un[0] if un else None,'od':od,'ods':ods,'pen':pe,'g':g,'owe':sum(y['amt'] for y in od)+pe,'done':not un and not g}
-def minpart(x):return math.ceil(x['amt']*max(50,cfgv('dmin',50))/100)
+def minpart(x):return money(math.ceil(minor(x['amt'])*max(50,cfgv('dmin',50))/100))
 
 def whole(value,label='сумму'):
     try:
@@ -264,42 +443,70 @@ def valid_date(value):
     except (ValueError,TypeError):
         raise Bad('Проверьте дату.')
 
+def received_date(value,t):
+    date=valid_date(value)
+    if date>t:raise Bad('Дата получения денег не может быть в будущем.')
+    return date
+
+def positive_amount(value):
+    if isinstance(value,bool):raise Bad('Введите сумму.')
+    try:
+        cents=minor(value)
+        if not 0<cents<=1000000000 or Decimal(str(value))*100!=cents:raise ValueError()
+    except (InvalidOperation,TypeError,ValueError,OverflowError):
+        raise Bad('Введите сумму с точностью до копейки.')
+    return money(cents)
+
 def payment_quote(d,options,t,settings=None):
     if not isinstance(options,dict):raise Bad('Выберите способ оплаты.')
     settings=settings if settings is not None else (doc('cfg') or {})
-    unpaid=[x for x in sched(d) if str(x['k']) not in (d.get('paid') or {})]
+    unpaid=unpaid_installments(d)
     if d.get('status')!='active' or not unpaid:raise Bad('Сейчас нечего оплачивать.')
     minimum=max(50,min(100,settings.get('dmin',50)))
     mode=options.get('mode','periods')
     if mode=='part':
         if dstat(d,t):raise Bad('Сначала погасите остаток предыдущего платежа.')
-        x=unpaid[0];amount=whole(options.get('amount'));mn=math.ceil(x['amt']*minimum/100)
-        if not mn<=amount<x['amt']:raise Bad(f"Часть платежа должна быть от {mn} до {x['amt']-1} ₽.")
-        pe=penalty(x['amt'],pdays(x['due'],t,d),d.get('pen'))
+        x=unpaid[0];amount=whole(options.get('amount'));mn=math.ceil(x['amt']*minimum/100);mx=math.ceil(x['amt'])-1
+        if mn>mx:raise Bad('Этот взнос доступен только целиком.')
+        if not mn<=amount<=mx:raise Bad(f'Часть платежа должна быть от {mn} до {mx} ₽.')
+        pe=penalty(x['amt'],pdays(payment_deadline(d,x),t,d),d.get('pen'))
         return {'mode':mode,'date':t,'count':1,'items':[{**x,'amt':amount,'pen':pe}],
                 'principal':amount,'pen':pe,'total':amount+pe,'bonus':0,'rate':0,'reductions':[],
-                'rest':x['amt']-amount,'debtDue':add(t,settings.get('dbd',3))}
+                'rest':money(minor(x['amt'])-minor(amount)),'debtDue':add(t,settings.get('dbd',3))}
     if mode!='periods':raise Bad('Выберите способ оплаты.')
     count=whole(options.get('count',1),'количество платежей')
     if not 1<=count<=len(unpaid):raise Bad('Выберите количество платежей.')
-    selected=unpaid[:count];selected_sum=sum(x['amt'] for x in selected);future=sum(x['amt'] for x in unpaid[count:])
+    selected=unpaid[:count];selected_sum=sum(minor(x['amt']) for x in selected)
+    selected_keys={x['k'] for x in selected}
+    tail=sorted(unpaid,key=lambda x:(x['due'],x['k']),reverse=True)
+    step=100 if all(minor(x['amt'])%100==0 for x in unpaid) else 1
     rate=float(settings.get('multi_discount',1.5)) if count>=2 else 0
     if not math.isfinite(rate) or not 0<=rate<=100:raise Bad('Проверьте ставку скидки.')
-    lo,hi=0,selected_sum
+
+    def allocate(cash,selected_limit):
+        left=math.floor(cash*rate/10000+0.5)*100
+        reductions=[]
+        for x in tail:
+            if not left:break
+            selected_row=x['k'] in selected_keys
+            amount=min(left,minor(x['amt']),selected_limit if selected_row else left)
+            if amount:reductions.append({'k':x['k'],'amt':money(amount)})
+            left-=amount
+            if selected_row:selected_limit-=amount
+        return reductions
+
+    lo,hi=0,selected_sum//step
     while lo<hi:
         cash=(lo+hi)//2
-        if cash+max(0,penalty(cash,1,rate)-future)>=selected_sum:hi=cash
+        on_selected=sum(minor(x['amt']) for x in allocate(cash*step,selected_sum) if x['k'] in selected_keys)
+        if cash*step+on_selected>=selected_sum:hi=cash
         else:lo=cash+1
-    principal=lo;bonus=min(penalty(principal,1,rate),selected_sum+future-principal)
-    reductions=[];left=bonus
-    for x in reversed(unpaid):
-        if left<=0:break
-        amount=min(left,x['amt']);reductions.append({'k':x['k'],'amt':amount});left-=amount
-    by_key={x['k']:x['amt'] for x in reductions}
-    items=[{**x,'amt':x['amt']-by_key.get(x['k'],0),'pen':penalty(x['amt'],pdays(x['due'],t,d),d.get('pen'))} for x in selected]
+    principal=money(lo*step);reductions=allocate(lo*step,selected_sum-lo*step)
+    by_key={x['k']:minor(x['amt']) for x in reductions};bonus=money(sum(by_key.values()))
+    items=[{**x,'amt':money(minor(x['amt'])-by_key.get(x['k'],0)),'pen':penalty(x['amt'],pdays(payment_deadline(d,x),t,d),d.get('pen'))} for x in selected]
     pe=sum(x['pen'] for x in items)
     return {'mode':mode,'date':t,'count':count,'items':items,'principal':principal,'pen':pe,
-            'total':principal+pe,'bonus':bonus,'rate':rate,'reductions':reductions,'rest':0}
+            'total':money(minor(principal)+minor(pe)),'bonus':bonus,'rate':rate,'reductions':reductions,'rest':0}
 
 def materialize_schedule(d):
     """Freeze effective amounts, including historic early credits, before editing a schedule."""
@@ -315,60 +522,155 @@ def materialize_schedule(d):
     d['schedule']=rows;d['shift']=0
 
 def reduce_tail(d,amount):
-    """Apply credit to unpaid periods, starting with the last. Return the actual credit."""
-    left=amount
-    for x in reversed(d['schedule']):
+    """Apply credit to unpaid periods, starting with the last."""
+    left=minor(amount);reductions=[]
+    for x in sorted(d['schedule'],key=lambda x:(x['due'],x['k']),reverse=True):
         if str(x['k']) in (d.get('paid') or {}):continue
-        used=min(left,x['amt']);x['amt']-=used;left-=used
+        used=min(left,minor(x['amt']))
+        if used:
+            x['amt']=money(minor(x['amt'])-used);left-=used
+            reductions.append({'k':x['k'],'due':x['due'],'amt':money(used)})
         if left<=0:break
-    return amount-left
+    return money(minor(amount)-left),reductions
 
-def restore_tail(d,amount):
-    if amount<=0:return
-    unpaid=[x for x in d['schedule'] if str(x['k']) not in d.get('paid',{})]
-    if not unpaid:raise Bad('Для восстановления скидки сначала отмените последний платёж.')
-    unpaid[-1]['amt']+=amount
+def restore_reductions(d,credit):
+    if not credit['amt']:return
+    reductions=credit.get('reductions')
+    if not reductions:raise Bad('Для старой скидки отсутствует распределение по взносам. Сверьте график с журналом перед отменой.')
+    rows={x['k']:x for x in d['schedule']}
+    for change in reductions:
+        key=change['k'];installment=rows.get(key)
+        if not installment or installment['due']!=change['due']:
+            raise Bad('После скидки этот взнос был изменён. Сверьте исходный и текущий графики перед отменой.')
+        if str(key) in d.get('paid',{}):
+            raise Bad('Сначала отмените более позднюю оплату взноса от '+dm(D(installment['due']))+'.')
+        installment['amt']=money(minor(installment['amt'])+minor(change['amt']))
 
-def apply_payment(d,quote,method,qr=None):
+def recover_reductions(key,d):
+    """Recover older allocations only if the saved before/after amounts prove their distribution."""
+    missing=[z for z in (d.get('bonuses') or [])+(d.get('early') or [])
+             if z.get('group') and z.get('amt') and not z.get('reductions')]
+    if not missing:return
+    for previous,current in db.execute("select old,new from log where id=? and (act like 'pay-periods%' or act='pay-qr') order by rowid desc",(key,)):
+        if not previous or not current:continue
+        old,new=json.loads(previous),json.loads(current)
+        before={x['k']:x for x in sched(old)}
+        changes=[]
+        for x in new.get('schedule') or []:
+            prior=before.get(x['k'])
+            if prior and prior['due']==x['due'] and minor(prior['amt'])>minor(x['amt']):
+                changes.append({'k':x['k'],'due':x['due'],'amt':money(minor(prior['amt'])-minor(x['amt']))})
+        for credit in missing[:]:
+            recorded=next((z for z in new.get('bonuses') or [] if z==credit),None)
+            existed=any(z['group']==credit['group'] for z in old.get('bonuses') or [])
+            if recorded and not existed and sum(minor(x['amt']) for x in changes)==minor(credit['amt']):
+                credit['reductions']=changes;missing.remove(credit)
+        if not missing:break
+
+def apply_payment(d,quote,method,qr=None,fees=None):
+    if sum(minor(x['amt'])+minor(x['pen']) for x in quote['items'])!=minor(quote['total']):
+        raise Bad('Распределение не совпадает с суммой оплаты. Рассчитайте платёж заново.')
     materialize_schedule(d)
-    group=nid();reductions={x['k']:x['amt'] for x in quote['reductions']}
-    for row_ in d['schedule']:row_['amt']-=reductions.get(row_['k'],0)
+    group=nid();reductions={x['k']:minor(x['amt']) for x in quote['reductions']};changes=[]
+    for row_ in d['schedule']:
+        amount=reductions.get(row_['k'],0)
+        if amount:
+            row_['amt']=money(minor(row_['amt'])-amount)
+            changes.append({'k':row_['k'],'due':row_['due'],'amt':money(amount)})
     for x in quote['items']:
-        put_paid(d,x['k'],quote['date'],x['amt'],x['pen'],method,qr,quote['mode']=='part')
+        put_paid(d,x['k'],quote['date'],x['amt'],x['pen'],method,qr,quote['mode']=='part',source=qr or group,fees=fees)
         d['paid'][str(x['k'])].update(group=group,due=x['due'],batch_count=quote['count'])
     if quote['rest']:
         d['debt']={'k':quote['items'][0]['k'],'amt':quote['rest'],'due':quote['debtDue']}
     if quote['bonus']:
         d.setdefault('bonuses',[]).append({'group':group,'date':quote['date'],'amt':quote['bonus'],
-                                         'base':quote['principal'],'rate':quote['rate'],'ks':[x['k'] for x in quote['items']]})
+                                         'base':quote['principal'],'rate':quote['rate'],'ks':[x['k'] for x in quote['items']],
+                                         'reductions':changes})
     return group
 
-def replan(d,first_due,weekly,t):
-    first_due=valid_date(first_due);weekly=whole(weekly,'сумму платежа')
-    if first_due<t:raise Bad('Выберите дату следующего платежа начиная с сегодняшнего дня.')
-    if weekly<1:raise Bad('Введите сумму платежа в целых рублях.')
-    current=sched(d);paid=d.get('paid') or {}
-    future=[x for x in current if str(x['k']) not in paid and x['due']>=t]
-    kept=[x for x in current if str(x['k']) in paid or x['due']<t]
-    balance=sum(x['amt'] for x in future)
-    if not balance:raise Bad('В графике нет будущих платежей для перерасчёта.')
-    count=math.ceil(balance/weekly);step=30 if d['type']=='m' else 7
-    if count>5200:raise Bad('Получается слишком длинный график. Увеличьте сумму платежа.')
-    max_key=max([d.get('n',0)]+[x['k'] for x in current]);left=balance;changed=[]
-    try:
-        for index in range(count):
-            if index<len(future):key=future[index]['k']
-            else:max_key+=1;key=max_key
-            amount=min(weekly,left);changed.append({'k':key,'due':add(first_due,step*index),'amt':amount});left-=amount
-    except (ValueError,OverflowError):raise Bad('Конец графика выходит за допустимую дату.')
-    schedule=sorted(kept+changed,key=lambda x:(x['due'],x['k']))
-    return {'schedule':schedule,'balance':balance,'count':count,'pay':weekly,'first':first_due,
-            'last':changed[-1]['due'],'lastAmount':changed[-1]['amt'],
-            'keptOverdue':sum(x['amt'] for x in kept if str(x['k']) not in paid),'debt':(dstat(d,t) or {}).get('total',0)}
+def changeable_installments(d, date, schedule=None):
+    paid = d.get('paid') or {}
+    current = sched(d) if schedule is None else schedule
+    return [x for x in current if str(x['k']) not in paid and x['due'] >= date and payment_deadline(d,x) == x['due']]
+
+def client_schedule_bounds(d, date, anchor=None):
+    future = changeable_installments(d, date)
+    if not future:
+        raise Bad('В графике нет будущих платежей для перерасчёта.')
+    anchor = anchor or min(x['due'] for x in future)
+    return anchor, max(date, add(anchor,-7)), min(add(anchor,7), max(x['due'] for x in future))
+
+def replan(d,first_due,weekly,t,client_anchor=None):
+    first_due = valid_date(first_due)
+    weekly = whole(weekly, 'сумму платежа')
+    if first_due < t:
+        raise Bad('Выберите дату следующего платежа начиная с сегодняшнего дня.')
+    if weekly < 1:
+        raise Bad('Введите сумму платежа в целых рублях.')
+
+    current = sched(d)
+    paid = d.get('paid') or {}
+    future = changeable_installments(d, t, current)
+    future_keys = {row['k'] for row in future}
+    kept = [row for row in current if row['k'] not in future_keys]
+    balance = money(sum(minor(row['amt']) for row in future))
+    if not balance:
+        raise Bad('В графике нет будущих платежей для перерасчёта.')
+    if client_anchor:
+        _, earliest, latest = client_schedule_bounds(d, t, client_anchor)
+        if not earliest <= first_due <= latest:
+            raise Bad('Дата нового взноса должна быть в пределах 7 дней от даты в заявке.')
+
+    last_due = max(row['due'] for row in future)
+    if first_due > last_due:
+        raise Bad('Выберите дату не позднее последнего платежа действующего графика.')
+    step = 30 if d['type'] == 'm' else 7
+    slots = math.ceil(diff(last_due, first_due) / step) + 1
+    count = min(slots, math.ceil(balance / weekly))
+    if count == 1 and first_due < last_due:
+        raise Bad('Укажите взнос меньше остатка или выберите дату последнего платежа для оплаты всей суммы.')
+    if count > 5200:
+        raise Bad('Получается слишком длинный график. Увеличьте сумму платежа.')
+
+    max_key = max([d.get('n', 0)] + [row['k'] for row in current])
+    changed = []
+    for index in range(count):
+        key = future[index]['k'] if index < len(future) else max_key + index - len(future) + 1
+        final = index == count - 1
+        due_date = last_due if final else add(first_due, step * index)
+        amount = money(minor(balance)-minor(weekly)*index) if final else weekly
+        changed.append({'k': key, 'due': due_date, 'amt': amount})
+
+    deferred = [row for row in kept if str(row['k']) not in paid and payment_deadline(d,row) >= t]
+    ending = sorted(deferred + changed,key=lambda row:(row['due'],row['k']))
+    previous = ending[-2]['due'] if len(ending) > 1 else None
+    last = ending[-1]
+    return {
+        'schedule': sorted(kept + changed, key=lambda row: (row['due'], row['k'])),
+        'balance': balance, 'count': count, 'pay': weekly, 'asOf': t, 'first': first_due,
+        'firstAmount': changed[0]['amt'], 'last': last['due'], 'lastAmount': last['amt'],
+        'previous': previous, 'gap': diff(last['due'], previous) if previous else None, 'step': step,
+        'before': future, 'after': changed,
+        'keptOverdue': sum(row['amt'] for row in kept if str(row['k']) not in paid and payment_deadline(d,row) < t),
+        'keptDeferred': sum(row['amt'] for row in deferred),
+        'debt': (dstat(d,t) or {}).get('total',0),
+    }
+
+def reschedule_details(plan):
+    return {key: plan[key] for key in (
+        'first', 'firstAmount', 'pay', 'balance', 'last', 'lastAmount', 'previous', 'gap', 'step'
+    )}
 
 def fingerprint(d):
     fields=('status','schedule','n','start','type','pay','last','paid','early','shift','pen','pw','np','debt','dpays','bonuses')
-    return hashlib.sha256(json.dumps({k:d.get(k) for k in fields},sort_keys=True).encode()).hexdigest()
+    data={k:d.get(k) for k in fields}
+    # Migrating fee records does not invalidate a QR printed before the update.
+    for field in ('paid','early','dpays'):
+        if field in d and d[field] is not None:
+            data[field] = payment_public(d)[field]
+    grants=[grant for grant in d.get('defer') or [] if grant.get('until')]
+    if grants:data['deferrals']=grants
+    return hashlib.sha256(json.dumps(data,sort_keys=True).encode()).hexdigest()
 
 def completion_notice(old,new):
     if new.get('status')!='active':return
@@ -394,30 +696,33 @@ def plan_period(d,A,t):
     not while a debt is open). Returns a plan or an error text."""
     I=info(d,t);x=I['x']
     if d.get('status')!='active' or not x:return 'Нечего оплачивать.'
-    pen=penalty(x['amt'],pdays(x['due'],t,d),d.get('pen'))
-    if A>=x['amt']+pen:return {'k':x['k'],'pen':pen,'pay':x['amt'],'rest':0,'left':A-x['amt']-pen}
+    pen=penalty(x['amt'],pdays(payment_deadline(d,x),t,d),d.get('pen'))
+    amount=minor(A);due=minor(x['amt']);principal=amount-minor(pen)
+    if principal>=due:return {'k':x['k'],'pen':pen,'pay':x['amt'],'rest':0,'left':money(principal-due)}
     if I['g']:return 'Пока не закрыт долг, период можно оплатить только целиком.'
-    mn=minpart(x);pa=A-pen
-    if pa<mn:return f'Сумма за период должна быть не меньше {rub(mn+pen)}.'
-    return {'k':x['k'],'pen':pen,'pay':pa,'rest':x['amt']-pa,'left':0}
-def put_paid(d,k,t,amt,pen,method,qr=None,part=False):
+    mn=minpart(x)
+    if principal<minor(mn):return f'Сумма за период должна быть не меньше {rub(mn+pen)}.'
+    return {'k':x['k'],'pen':pen,'pay':money(principal),'rest':money(due-principal),'left':0}
+def put_paid(d,k,t,amt,pen,method,qr=None,part=False,source=None,fees=None):
     due_=next((x['due'] for x in sched(d) if x['k']==k),None)
-    p={'date':t,'amt':amt,'pen':pen,'method':method}
+    p={'date':t,'amt':amt,'pen':pen,'method':method,'source':source or qr or nid(),'fees':fees or fee_rates(method)}
     if due_:p['due']=due_
     if part:p['part']=1
     if qr:p['qr']=qr
     d.setdefault('paid',{})[str(k)]=p
-def apply_plan(d,p,t,method,qr=None):
-    put_paid(d,p['k'],t,p['pay'],p['pen'],method,qr,p['rest']>0)
+def apply_plan(d,p,t,method,qr=None,fees=None,source=None):
+    put_paid(d,p['k'],t,p['pay'],p['pen'],method,qr,p['rest']>0,fees=fees,source=source)
     if p['rest']>0:d['debt']={'k':p['k'],'amt':p['rest'],'due':add(t,int(cfgv('dbd',3)))}
     return p['left']
-def apply_debt(d,A,t,method,qr=None):
+def apply_debt(d,A,t,method,qr=None,source=None,fees=None):
     """Money for the open debt: the penalty first, then the remainder. Returns what is left over."""
     g=dstat(d,t)
     if not g:raise Bad('Долга нет.')
     if A<=g['pen']:raise Bad(f"Сумма должна быть больше неустойки {rub(g['pen'])}.")
-    pr,left=(g['amt'],A-g['total']) if A>=g['total'] else (A-g['pen'],0);rest=g['amt']-pr
-    z={'date':t,'amt':pr,'pen':g['pen'],'method':method,'k':g['k'],'pv':dict(d['debt'])}
+    available=minor(A)-minor(g['pen']);owed=minor(g['amt'])
+    pr=money(min(available,owed));left=money(max(0,available-owed));rest=money(max(0,owed-available))
+    z={'date':t,'amt':pr,'pen':g['pen'],'method':method,'k':g['k'],'pv':dict(d['debt']),
+       'source':source or qr or nid(),'fees':fees or fee_rates(method)}
     if qr:z['qr']=qr
     d.setdefault('dpays',[]).append(z)
     if rest>0:
@@ -425,17 +730,18 @@ def apply_debt(d,A,t,method,qr=None):
         if t>d['debt']['due']:d['debt']['pb']=t
     else:d.pop('debt',None)
     return left
-def apply_money(d,kind_,A,t,method,qr=None):
+def apply_money(d,kind_,A,t,method,qr=None,fees=None,source=None,settle_debt=True):
     """Bills and unrecognised payments: kind_ is 'period' or 'debt'. Returns what is left over (an overpayment); raises Bad when it cannot be applied."""
-    if kind_=='debt':return apply_debt(d,A,t,method,qr)
+    source=source or qr or nid()
+    if kind_=='debt':return apply_debt(d,A,t,method,qr,source=source,fees=fees)
     p=plan_period(d,A,t)
     if isinstance(p,str):raise Bad(p)
-    left=apply_plan(d,p,t,method,qr)
-    if left>0 and dstat(d,t):
-        try:left=apply_debt(d,left,t,method,qr)
+    left=apply_plan(d,p,t,method,qr,fees=fees,source=source)
+    if settle_debt and left>0 and dstat(d,t):
+        try:left=apply_debt(d,left,t,method,qr,source=source,fees=fees)
         except Bad:pass
     return left
-def lg(d):return {k:v for k,v in d.items() if k not in('img','jwt')}
+def lg(d):return {k:v for k,v in d.items() if k not in('img','jwt','attachment')}
 def put_srv(i,k,d,act,by='',old=None):
     """Write a document from a server-side action (a QR payment, a bill): bumps _v for deals so that stale screens get a conflict."""
     if k=='deal':completion_notice(old,d)
@@ -443,6 +749,282 @@ def put_srv(i,k,d,act,by='',old=None):
     save(i,k,d);db.execute('insert into log values(?,?,?,?,?)',(dt.datetime.now(MSK).isoformat(),act+(('@'+by) if by else ''),i,old and strip(json.dumps(lg(old))),strip(json.dumps(lg(d)))))
 def docs_of(k):
     return [(i,json.loads(x)) for i,x in db.execute('select id,data from docs where kind=?',(k,)).fetchall()]
+
+def download_file(name,mime,data):
+    now=time.time()
+    for key in list(FILE_DL):
+        if FILE_DL[key][0]<now:FILE_DL.pop(key,None)
+    while len(FILE_DL)>=32:FILE_DL.pop(next(iter(FILE_DL)))
+    key=secrets.token_urlsafe(22)
+    FILE_DL[key]=(now+180,name,mime,data)
+    return {'url':'/files/'+key,'name':name}
+
+def calendar_data(key,d,t):
+    rows=sched(d)
+    events=[]
+    for number,installment in enumerate(rows,1):
+        if str(installment['k']) in (d.get('paid') or {}):continue
+        limit=payment_deadline(d,installment)
+        if limit<t:continue
+        original=f"Взнос по графику {dm(D(installment['due']))}." if limit!=installment['due'] else ''
+        events.append((f"{key}-{installment['k']}",limit,f"Выкуп, взнос {number} — {rub(installment['amt'])}",original))
+    debt=dstat(d,t)
+    if debt and not debt['over']:
+        events.append((f"{key}-debt-{debt['k']}",debt['due'],f"Доплата за электровелосипед — {rub(debt['amt'])}",''))
+    if not events:raise Bad('В графике нет предстоящих платежей.')
+    def escape(value):return value.replace('\\','\\\\').replace(';','\\;').replace(',','\\,').replace('\n','\\n')
+    def fold(value):
+        lines=[];line='';length=0
+        for c in value:
+            size=len(c.encode('utf-8'))
+            if length+size>75:lines.append(line);line=' ';length=1
+            line+=c;length+=size
+        return '\r\n'.join(lines+[line])
+    stamp=dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Volt Voyage//Vykup//RU','CALSCALE:GREGORIAN']
+    for uid,limit,summary,desc in sorted(events,key=lambda e:e[1]):
+        lines+=['BEGIN:VEVENT',f'UID:{uid}@volt-voyage-vykup',f'DTSTAMP:{stamp}',f"DTSTART;VALUE=DATE:{limit.replace('-','')}",
+                f'SUMMARY:{escape(summary)}',f'DESCRIPTION:{escape(desc)}','END:VEVENT']
+    return ('\r\n'.join(fold(line) for line in lines+['END:VCALENDAR',''])).encode('utf-8')
+
+def payment_report_summary(record):
+    return {key:value for key,value in record.items() if key!='attachment'} | {'hasAttachment':bool(record.get('attachment'))}
+
+def decode_upload(value,max_size):
+    if not isinstance(value,str) or not value or len(value)>4*((max_size+2)//3):raise Bad('Проверьте размер и формат файла.')
+    try:data=base64.b64decode(value,validate=True)
+    except (ValueError,binascii.Error):raise Bad('Не удалось прочитать файл.')
+    if not data or len(data)>max_size:raise Bad('Проверьте размер файла.')
+    return data
+
+def proof_file(value):
+    data=decode_upload(value,1500000)
+    extensions=(('pdf','application/pdf',b'%PDF-'),('jpg','image/jpeg',b'\xff\xd8\xff'),('png','image/png',b'\x89PNG\r\n\x1a\n'))
+    for extension,mime,signature in extensions:
+        if data.startswith(signature):return extension,mime,data
+    raise Bad('Прикрепите квитанцию в формате PDF, JPG или PNG.')
+
+def payment_report_action(b,ro,x,t,by):
+    action=b.get('do')
+    if ro=='client' and action=='submit':
+        key,d=action_deal(b,ro,x,allow_client=True)
+        date=valid_date(b.get('date'));amount=statement_amount(b.get('amount'))
+        if date>t:raise Bad('Дата платежа не может быть в будущем.')
+        reference=str(b.get('reference') or '').strip()[:180]
+        note=str(b.get('note') or '').strip()[:1000]
+        attachment=b.get('attachment') or ''
+        if attachment:proof_file(attachment)
+        data={'deal':key,'client':x,'date':date,'amount':amount,'reference':reference,'note':note,'attachment':attachment,'status':'pending'}
+        for i,record in docs_of('paymentreport'):
+            if all(record.get(k)==v for k,v in data.items()):return {'id':i}
+        key=nid();data['created']=dt.datetime.now(MSK).isoformat();put_srv(key,'paymentreport',data,'payment-report')
+        say(f"Обращение об оплате от {(doc(x) or {}).get('name','')}, {amount/100:.2f} ₽. Откройте карточку выкупа.")
+        return {'id':key}
+    i=str(b.get('id') or '');record=ID.fullmatch(i) and row(i)
+    if not record or record[0]!='paymentreport':raise Bad('Обращение не найдено.')
+    data=record[1]
+    action_deal({'deal':data['deal']},ro,x,allow_client=action=='receipt')
+    if ro=='client' and data.get('client')!=x:raise Bad('Обращение не найдено.')
+    if action=='receipt':
+        if not data.get('attachment'):raise Bad('Квитанция не прикреплена.')
+        extension,mime,raw=proof_file(data['attachment'])
+        return download_file('kvitanciya.'+extension,mime,raw)
+    if action=='resolve' and data.get('status')=='pending':
+        status=b.get('status')
+        if status not in ('credited','not_found'):raise Bad('Выберите результат проверки.')
+        old=dict(data);data.update(status=status,resolved=t,answer=str(b.get('answer') or '').strip()[:1000])
+        put_srv(i,'paymentreport',data,'payment-report-resolve',by,old)
+        return {}
+    raise Bad('Обращение уже рассмотрено.')
+
+def existing_receipts(deal_id=None):
+    payments={}
+    def add_receipt(deal,d,date,method,cash,src,qr=None):
+        if not date or method not in ('СБП','перевод') or not cash:return
+        identity=(deal,src,date,method)
+        if identity not in payments:
+            payments[identity]={'deal':deal,'source':src,'date':date,'method':method,'qr':qr,'amount':0,'contract':d.get('contract') or ''}
+        payments[identity]['amount']+=minor(cash)
+    for deal,d in docs_of('deal'):
+        if deal_id and deal!=deal_id:continue
+        records=list(receipt_parts(d))
+        if d.get('down'):
+            method=d.get('down_method') or ((d.get('paid') or {}).get('1') or {}).get('method')
+            records.append(('down',0,{'date':d['start'],'amt':d['down'],'method':method,'source':d.get('down_source') or 'down'}))
+        for kind,key,p in records:
+            date,method,cash=receipt_cash(p,kind)
+            src=p.get('source') or p.get('qr') or (p.get('group') if kind=='paid' else None) or f'{kind}-{key}'
+            add_receipt(deal,d,date,method,cash,src,p.get('qr'))
+    for _,z in docs_of('unk'):
+        deal=z.get('deal');src=z.get('source') or z.get('qr')
+        if src and not z.get('unconfirmed') and z.get('status') in ('open','done') and (not deal_id or deal==deal_id):
+            add_receipt(deal,doc(deal) or {},z.get('date'),z.get('method','СБП'),z.get('amt'),src,z.get('qr'))
+    return list(payments.values())
+
+def possible_duplicate(deal, date, total):
+    return next((p for p in existing_receipts(deal) if p['qr'] and p['date']==date and p['amount']==round(total*100)),None)
+
+def statement_amount(value):
+    clean=re.sub(r'[\s\u00a0₽]', '', str(value or '')).replace(',','.')
+    try:
+        number=Decimal(clean)
+        if not number.is_finite() or abs(number)>Decimal('1000000000'):raise InvalidOperation()
+        cents=int((number*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+    except (InvalidOperation,ValueError):raise Bad('Проверьте сумму платежа.')
+    if cents<=0:raise Bad('Сумма платежа должна быть больше нуля.')
+    return cents
+
+STATEMENT_FIELDS={
+    'date':('дата','датаоперации','датаплатежа','датапроводки','датадокумента','датазачисления','date','operationdate','bookingdate'),
+    'credit':('кредит','приход','зачислено','суммазачисления','входящаясумма','кредитруб','credit','creditamount'),
+    'amount':('сумма','суммаоперации','суммаплатежа','суммаврублях','суммаруб','суммавалюте','amount','transactionamount'),
+    'direction':('тип','направление','движение','типоперации','видоперации','direction','type'),
+    'purpose':('назначение','назначениеплатежа','описание','комментарий','детали','description','purpose','details'),
+    'reference':('идентификатор','идентификатороперации','idоперации','номероперации','номерплатежа','номердокумента','номер','transactionid','operationid','reference','rrn','id'),
+}
+
+def normalize_column(text):return re.sub(r'[^а-яa-z0-9]','',str(text).lower().replace('ё','е'))
+
+def statement_columns(rows):
+    for index,line in enumerate(rows[:60]):
+        names=[normalize_column(cell) for cell in line]
+        cols={field:next((i for alias in choices for i,name in enumerate(names) if name==alias),None)
+              for field,choices in STATEMENT_FIELDS.items()}
+        if cols['date'] is not None and (cols['amount'] is not None or cols['credit'] is not None):return index,cols
+    return None
+
+def xlsx_cells(raw):
+    ns='{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
+    with zipfile.ZipFile(io.BytesIO(raw)) as book:
+        def xml(name):
+            if book.getinfo(name).file_size>16000000:raise Bad('Таблица слишком большая. Загрузите выписку за меньший период.')
+            data=book.read(name)
+            if re.search(br'<!\s*(?:doctype|entity)',data,re.I):raise Bad('Не удалось прочитать XLSX.')
+            return ET.fromstring(data)
+        sheets=[i for i in book.namelist() if re.fullmatch(r'xl/worksheets/sheet\d+\.xml',i)]
+        strings=[]
+        if 'xl/sharedStrings.xml' in book.namelist():
+            strings=[''.join(t.text or '' for t in node.iter(ns+'t')) for node in xml('xl/sharedStrings.xml').findall(ns+'si')]
+        workbook=xml('xl/workbook.xml')
+        properties=workbook.find(ns+'workbookPr')
+        date1904=properties is not None and properties.get('date1904') in ('1','true')
+        for name in sheets[:20]:
+            data=[]
+            for row_ in xml(name).iter(ns+'row'):
+                if len(data)>=15000:raise Bad('Загрузите выписку за меньший период.')
+                values=[]
+                for cell in row_.findall(ns+'c'):
+                    match=re.match(r'[A-Z]+',cell.get('r') or '');index=0
+                    if not match:continue
+                    for letter in match[0]:index=index*26+ord(letter)-64
+                    if not 1<=index<=128:continue
+                    value=cell.findtext(ns+'v',default='');kind=cell.get('t')
+                    if kind=='s':value=strings[int(value)] if value else ''
+                    elif kind=='inlineStr':value=''.join(t.text or '' for t in cell.iter(ns+'t'))
+                    values.extend(['']*max(0,index-len(values)));values[index-1]=value
+                data.append(values)
+            if statement_columns(data):return data,date1904
+    return [],False
+
+def statement_date(value,date1904=False):
+    value=str(value).strip()
+    try:
+        if re.fullmatch(r'\d{4,6}(?:\.\d+)?',value):
+            epoch=dt.date(1904,1,1) if date1904 else dt.date(1899,12,30)
+            return (epoch+dt.timedelta(days=int(float(value)))).isoformat()
+        if re.match(r'\d{4}-\d{2}-\d{2}',value):return valid_date(value[:10])
+        for pattern in ('%d.%m.%Y','%d/%m/%Y','%d-%m-%Y'):
+            try:return dt.datetime.strptime(value.split()[0],pattern).date().isoformat()
+            except ValueError:continue
+    except (ValueError,IndexError,OverflowError):pass
+    raise Bad('Не удалось разобрать дату.')
+
+def read_statement(value):
+    raw=decode_upload(value,2000000);date1904=False
+    try:
+        if raw.startswith(b'PK\x03\x04'):rows,date1904=xlsx_cells(raw)
+        else:
+            try:body=raw.decode('utf-8-sig')
+            except UnicodeDecodeError:body=raw.decode('cp1251')
+            candidates=(list(csv.reader(io.StringIO(body),delimiter=delimiter)) for delimiter in (';','\t',','))
+            rows=next((r for r in candidates if statement_columns(r)),[])
+    except (ValueError,IndexError,KeyError,UnicodeError,ET.ParseError,zipfile.BadZipFile,csv.Error):
+        raise Bad('Не удалось открыть выписку. Загрузите CSV или XLSX.')
+    columns=statement_columns(rows)
+    if not columns:raise Bad('Нужны колонки «Дата» и «Сумма» или «Кредит». Подойдут также «Назначение платежа» и «Номер операции».')
+    index,cols=columns;operations=[];labels=False;skipped=0
+    for line in rows[index+1:]:
+        if not any(line):continue
+        def get(field):
+            i=cols[field];return str(line[i]).strip() if i is not None and i<len(line) else ''
+        credit=cols['credit'] is not None
+        if re.search(r'списан|исходящ|расход|debit|outgoing',get('direction'),re.I):continue
+        try:
+            amount=statement_amount(get('credit' if credit else 'amount'))
+            date=statement_date(get('date'),date1904)
+        except Bad:
+            if get('date') and (not credit or get('credit')):skipped+=1
+            continue
+        purpose=get('purpose')[:280];direction=get('direction');reference=get('reference')[:180]
+        sbp=bool(re.search(r'(?<![а-яa-z])(?:сбп|sbp)(?![а-яa-z])|систем[аы]\s+быстрых\s+платеж',direction+' '+purpose,re.I))
+        labels=labels or sbp
+        operations.append({'date':date,'amount':amount,'purpose':purpose,'reference':reference,'sbp':sbp})
+        if len(operations)>5000:raise Bad('Загрузите выписку за меньший период. За одну сверку можно проверить до 5000 поступлений.')
+    return operations,not labels,skipped
+
+def statement_key(operation):
+    date=valid_date(operation.get('date'));amount=operation.get('amount')
+    if type(amount) is not int or not 0<amount<=100000000000:raise Bad('Проверьте сумму операции в копейках.')
+    reference=str(operation.get('reference') or '').strip().lower()[:180]
+    purpose='' if reference else ' '.join(str(operation.get('purpose') or '').lower()[:280].split())
+    return hashlib.sha256(json.dumps([date,amount,reference,purpose],ensure_ascii=False).encode()).hexdigest()[:16]
+
+def statement_review(operations):
+    receipts=existing_receipts();by_amount={};by_source={};refs={}
+    for i,q in docs_of('qr'):
+        refs[i]={str(q[k]).strip().lower() for k in ('tid','trxId','refTransactionId') if q.get(k)}
+    for p in receipts:
+        by_amount.setdefault((p['date'],p['amount']),[]).append(p)
+        by_source[(p['deal'],p['source'],p['date'],p['amount'])]=p
+    links=dict(docs_of('statementlink'));claimed={(z['deal'],z['source'],z['date'],z['amount']):i for i,z in links.items()}
+    seen=set();duplicates=set()
+    for operation in operations:
+        k=statement_key(operation)
+        if k in seen:duplicates.add(k)
+        seen.add(k)
+    exact_matches={}
+    for operation in operations:
+        k=statement_key(operation);reference=str(operation.get('reference') or '').strip().lower()
+        if not reference or k in duplicates or k in links:continue
+        hits=[p for p in by_amount.get((operation['date'],operation['amount']),[])
+              if reference in refs.get(p['qr'],()) and (p['deal'],p['source'],p['date'],p['amount']) not in claimed]
+        if len(hits)==1:
+            payment=hits[0];exact_matches[k]=payment
+            claimed[(payment['deal'],payment['source'],payment['date'],payment['amount'])]=k
+    result=[]
+    for operation in operations:
+        k=statement_key(operation);op={**operation,'key':k};link=links.get(k) or {}
+        linked=by_source.get((link.get('deal'),link.get('source'),op['date'],op['amount']))
+        matches=[p for p in by_amount.get((op['date'],op['amount']),[]) if (p['deal'],p['source'],p['date'],p['amount']) not in claimed]
+        if k in duplicates:op.update(state='duplicate',matches=[])
+        elif linked:op.update(state='linked',payment=linked,matches=[])
+        elif k in exact_matches:op.update(state='exact',payment=exact_matches[k],matches=[])
+        else:op.update(state='possible' if matches else 'unmatched',matches=matches[:30])
+        result.append(op)
+    return result
+
+def link_statement(operation,deal,source):
+    key=statement_key(operation);date=operation['date'];amount=operation['amount']
+    old=doc(key)
+    matching=next((p for p in existing_receipts(deal) if p['source']==source and (p['date'],p['amount'])==(date,amount)),None)
+    if not matching:raise Bad('Платёж изменился. Сверьте выписку ещё раз.')
+    if old and (old.get('deal'),old.get('source'))!=(deal,source) and any(p['source']==old.get('source') and p['date']==date and p['amount']==amount for p in existing_receipts(old['deal'])):
+        raise Bad('Строка выписки уже привязана к другому платежу.')
+    if any(i!=key and z.get('deal')==deal and z.get('source')==source and z.get('date')==date for i,z in docs_of('statementlink')):
+        raise Bad('Этот платёж уже связан с другой строкой выписки.')
+    data={'deal':deal,'source':source,'date':date,'amount':amount,'reference':str(operation.get('reference') or '')[:180]}
+    put_srv(key,'statementlink',data,'statement-link',old=old)
+    return matching
 # ---------- Tochka (SBP QR) ----------
 # The owner types the JWT token, the merchant id (merchantId) and the account id (accountId, «счёт/БИК») in Settings.
 def tq():
@@ -454,12 +1036,15 @@ def tochka(t,method,path,body=None):
     return json.load(urllib.request.urlopen(rq,timeout=25))
 def qr_make(t,amt,purpose):
     """Registers a dynamic QR for amt rubles that is valid until the end of the day (the amount goes to the bank in kopecks, the lifetime in minutes)."""
-    if t.get('mock'):return {'id':'mock'+nid(),'payload':'https://qr.nspk.ru/MOCK'+nid(),'img':None}
-    n=dt.datetime.now(MSK);ttl=max(5,int((dt.datetime.combine(n.date()+dt.timedelta(days=1),dt.time(),MSK)-n).total_seconds()//60))
+    n=dt.datetime.now(MSK);midnight=dt.datetime.combine(n.date()+dt.timedelta(days=1),dt.time(),MSK)
+    ttl=int(((midnight-n).total_seconds()-(0 if t.get('mock') else 25))//60)
+    if ttl<1:raise Bad('До полуночи по Москве осталось мало времени. Запросите QR после 00:00.')
+    expires=(n+dt.timedelta(minutes=ttl)).isoformat(timespec='seconds')
+    if t.get('mock'):return {'id':'mock'+nid(),'payload':'https://qr.nspk.ru/MOCK'+nid(),'img':None,'expires':expires}
     try:
-        r=tochka(t,'POST',f"/sbp/v1.0/qr-code/merchant/{urllib.parse.quote(t['merchant'],safe='')}/{t['account']}",{'Data':{'amount':int(round(amt*100)),'currency':'RUB','paymentPurpose':purpose[:140],
+        r=tochka(t,'POST',f"/sbp/v1.0/qr-code/merchant/{urllib.parse.quote(t['merchant'],safe='')}/{t['account']}",{'Data':{'amount':minor(amt),'currency':'RUB','paymentPurpose':purpose[:140],
             'qrcType':'02','ttl':ttl,'imageParams':{'width':400,'height':400,'mediaType':'image/png'}}})['Data']
-        return {'id':r['qrcId'],'payload':r['payload'],'img':(r.get('image') or {}).get('content')}
+        return {'id':r['qrcId'],'payload':r['payload'],'img':(r.get('image') or {}).get('content'),'expires':expires}
     except urllib.error.HTTPError as e:
         print('tochka qr',e.code,e.read()[:300])
         raise Bad('Точка не приняла токен. Проверьте его в Настройках.' if e.code in(401,403) else 'Точка не нашла торговую точку или счёт. Проверьте их ID в Настройках.' if e.code in(400,404) else 'Точка не ответила, попробуйте ещё раз.')
@@ -467,9 +1052,13 @@ def qr_make(t,amt,purpose):
         print('tochka qr',e);raise Bad('Точка не ответила, попробуйте ещё раз.')
 def qr_paid(t,ids):
     """Which of the QR codes are paid (the bank's answer)."""
-    if t.get('mock') or not ids:return set()
+    if t.get('mock') or not ids:return {}
     r=tochka(t,'GET','/sbp/v1.0/qr-codes/'+','.join(ids)+'/payment-status')['Data']
-    return {x.get('qrcId') for x in r.get('paymentList',[]) if x.get('status')=='Accepted'}
+    return {x['qrcId']:x for x in r.get('paymentList',[]) if x.get('qrcId') and x.get('status')=='Accepted'}
+
+def qr_expiry(q):
+    if q.get('expires'):return dt.datetime.fromisoformat(q['expires'])
+    return dt.datetime.combine(D(q['date'])+dt.timedelta(days=1),dt.time(),MSK)
 def qr_amount(d,kind_,t,bill=None,options=None,settings=None):
     """(amount, penalty inside it, periods) of a QR of this kind right now; raises Bad when there is nothing to pay."""
     if kind_=='now':
@@ -492,6 +1081,10 @@ def qr_amount(d,kind_,t,bill=None,options=None,settings=None):
         return bill['amt'],0,None,None
     raise Bad('Неверный запрос.')
 def qr_request(u,cl,b):
+    with QR_LOCKS[hash(str(b.get('deal') or ''))%len(QR_LOCKS)]:
+        return register_qr(u,cl,b)
+
+def register_qr(u,cl,b):
     """A QR for a deal, asked by the client (cl) or by the owner / an administrator with the right «pay». The bank is called without the lock."""
     with L:
         ro,x=role(u);t=tod()
@@ -510,20 +1103,40 @@ def qr_request(u,cl,b):
         before=fingerprint(d)
         amt,pe,ks,quote=qr_amount(d,k,t,bill,options,settings)
         for j,q in docs_of('qr'):
-            if q.get('deal')==i and q.get('status')=='open' and q.get('date')==t and q.get('kind')==k and q.get('amt')==amt and q.get('bill')==(bid if bill else None) and q.get('fingerprint')==before and q.get('quote')==quote:return {'qr':j}
+            if q.get('deal')==i and q.get('status')=='open' and q.get('date')==t and qr_expiry(q)>dt.datetime.now(MSK) and q.get('kind')==k and q.get('amt')==amt and q.get('bill')==(bid if bill else None) and q.get('fingerprint')==before and q.get('quote')==quote:return {'qr':j}
         purpose=f"Выкуп электровелосипеда, договор {d.get('contract') or '—'}, {(doc(d.get('client')) or {}).get('name','')}"
     m=qr_make(tc,amt,purpose)
     with L:
         d=doc(i);bill=doc(bid) if bill else None
         if not d or fingerprint(d)!=before or qr_amount(d,k,t,bill,options,settings)[0]!=amt or tod()!=t:raise Bad('Данные изменились, откройте экран заново.')
-        qid=nid();put_srv(qid,'qr',{'deal':i,'kind':k,'amt':amt,'pen':pe,'ks':ks,'quote':quote,'options':options,'settings':settings,'fingerprint':before,'bill':bid if bill else None,'date':t,'status':'open','tid':m['id'],'payload':m['payload'],'img':m['img'],'ts':dt.datetime.now(MSK).isoformat(timespec='seconds')},'qr','' if cl else str((x[1].get('name') if ro=='admin' else 'owner'))[:40])
+        qid=nid();put_srv(qid,'qr',{'deal':i,'kind':k,'amt':amt,'pen':pe,'ks':ks,'quote':quote,'options':options,'settings':settings,'fingerprint':before,'bill':bid if bill else None,'date':t,'status':'open','tid':m['id'],'payload':m['payload'],'img':m['img'],'expires':m.get('expires'),'ts':dt.datetime.now(MSK).isoformat(timespec='seconds')},'qr','' if cl else str((x[1].get('name') if ro=='admin' else 'owner'))[:40])
         db.commit();return {'qr':qid}
-def on_paid(qid,q):
+
+def bank_payment_date(payment,q):
+    for field in ('paymentDate','paymentDateTime','operationDate','acceptedAt'):
+        value=payment.get(field)
+        if not isinstance(value,str):continue
+        try:
+            when=dt.datetime.fromisoformat(value.replace('Z','+00:00'))
+            date=when.astimezone(MSK).date().isoformat() if when.tzinfo else valid_date(value)
+            if q['date']<=date<=tod():return date,value
+        except (ValueError,Bad):pass
+    return (q['date'],None) if q['date']==tod() else (None,None)
+
+def on_paid(qid,q,payment=None):
     """The bank confirmed a QR payment. It is credited automatically when nothing changed since the QR was made (same day, same amount);
     otherwise it goes to «Не распознано». Call with the lock held."""
     if q.get('status')!='open':return
-    old=dict(q);q['status']='paid';put_srv(qid,'qr',q,'qr-paid','',old)
-    d=doc(q['deal']);t=tod();left=q['amt'];why='Оплата пришла после изменений в выкупе или не в тот день.';ok=False
+    payment=payment or {};old=dict(q)
+    for field in ('trxId','refTransactionId'):
+        if payment.get(field):q[field]=str(payment[field])[:180]
+    q['confirmedAt']=dt.datetime.now(MSK).isoformat(timespec='seconds')
+    t,bank_time=bank_payment_date(payment,q)
+    if q.get('trxId') and any(i!=qid and z.get('status')=='paid' and z.get('trxId')==q['trxId'] for i,z in docs_of('qr')):
+        q['status']='duplicate';put_srv(qid,'qr',q,'qr-duplicate','',old);return
+    q.update(status='paid',fees=fee_rates('СБП'),paidDate=t,bankTime=bank_time)
+    put_srv(qid,'qr',q,'qr-paid','',old)
+    d=doc(q['deal']);left=q['amt'];why='Оплата пришла после изменений в выкупе или не в день создания QR.';ok=False
     if d and d.get('status')=='active' and t==q['date'] and (not q.get('fingerprint') or q['fingerprint']==fingerprint(d)):
         d2=copy.deepcopy(d)
         try:
@@ -550,22 +1163,37 @@ def on_paid(qid,q):
     c=(doc((d or {}).get('client','')) or {}).get('name','')
     if ok and left<=0:say(f"Оплата по QR: {c}, {rub(q['amt'])}.")
     else:
-        put_srv(nid(),'unk',{'ts':dt.datetime.now(MSK).isoformat(timespec='seconds'),'amt':left if ok else q['amt'],'qr':qid,'deal':q['deal'],'status':'open','why':'Переплата сверх суммы к оплате.' if ok else why},'unk')
+        put_srv(nid(),'unk',{'ts':q['confirmedAt'],'date':t,'amt':left if ok else q['amt'],'qr':qid,'deal':q['deal'],'status':'open','why':'Переплата сверх суммы к оплате.' if ok else why},'unk')
         say(f"Платёж по QR не распознан: {c}, {rub(left if ok else q['amt'])}. Разберите в приложении.")
 PL_LAST=[0]
 def poll():
     with L:
-        t=tq()
-        if not t:return
-        lo=add(tod(),-2);op={q['tid']:i for i,q in docs_of('qr') if q.get('status')=='open' and q.get('date','')>=lo}
-    if not op:return
-    try:paid=qr_paid(t,list(op))
-    except Exception as e:print('poll',e);return
-    with L:
-        for tid in paid:
-            i=op.get(tid);q=i and doc(i)
-            if q:on_paid(i,q)
+        t=tq();now=dt.datetime.now(MSK);op={}
+        for i,q in docs_of('qr'):
+            if q.get('status')!='open':continue
+            if qr_expiry(q)+dt.timedelta(days=1)<=now:
+                old=dict(q);q['status']='review';put_srv(i,'qr',q,'qr-review','',old)
+                put_srv(nid(),'unk',{'deal':q['deal'],'qr':i,'amt':q['amt'],'ts':now.isoformat(timespec='seconds'),
+                                    'status':'open','unconfirmed':True,'why':'Истекло окно проверки QR. Найдите операцию в выписке банка.'},'unk')
+            elif t:
+                op[q['tid']]=i
         db.commit()
+    if not op:return
+    def check(ids):
+        try:return qr_paid(t,ids)
+        except urllib.error.HTTPError as error:
+            if error.code in (400,404) and len(ids)>1:
+                return {k:v for tid in ids for k,v in check([tid]).items()}
+            if error.code not in (400,404):print('poll',error)
+        except Exception as error:print('poll',error)
+        return {}
+    ids=list(op)
+    for start in range(0,len(ids),20):
+        paid=check(ids[start:start+20])
+        with L,db:
+            for tid in paid:
+                i=op.get(tid);q=i and doc(i)
+                if q:on_paid(i,q,paid[tid] if isinstance(paid,dict) else None)
 def poll_soon():
     """Called while a client looks at a QR: asks the bank at most once in 10 seconds, so the payment shows within seconds, not minutes."""
     if time.time()-PL_LAST[0]>10:PL_LAST[0]=time.time();threading.Thread(target=poll,daemon=True).start()
@@ -583,8 +1211,9 @@ def owner_act(p,b,ro,x,P):
             n.update(merchant=mr,account=ac)
             if b.get('jwt'):n['jwt']=str(b['jwt']).strip()[:5000]
             n.setdefault('hook',secrets.token_urlsafe(18))
-        db.execute('insert or replace into docs values(?,?,?)',('tch','tch',json.dumps(n)))
-        db.execute('insert into log values(?,?,?,?,?)',(dt.datetime.now(MSK).isoformat(),'tochka','tch',json.dumps({k:('***' if k=='jwt' else v) for k,v in old.items()}),json.dumps({k:('***' if k=='jwt' else v) for k,v in n.items()})));db.commit();return {}
+        save_bank_settings(n)
+        db.execute('delete from docs where id=?',('tch',))
+        db.execute('insert into log values(?,?,?,?,?)',(dt.datetime.now(MSK).isoformat(),'tochka','tch',json.dumps({'on':bool(old)}),json.dumps({'on':bool(n)})));db.commit();return {}
     if p=='/api/mockpay':
         if not MOCK or ro!='owner':raise Bad('Нет доступа.')
         q=doc(str(b.get('qr','')))
@@ -600,16 +1229,18 @@ def owner_act(p,b,ro,x,P):
             if b['do']=='paid':
                 m=b.get('method');d=doc(z['deal'])
                 if m not in('наличные','СБП','перевод') or not d:raise Bad('Выберите способ оплаты.')
-                d2=copy.deepcopy(d);left=apply_money(d2,z['kind'],z['amt'],t,m)
+                duplicate=possible_duplicate(z['deal'],t,z['amt'])
+                if b.get('preview'):return {'duplicate':duplicate}
+                if duplicate and b.get('confirmedDuplicate')!=duplicate['source']:raise Bad('По QR уже есть платёж на эту сумму. Проверьте операцию.')
+                source=nid();d2=copy.deepcopy(d);left=apply_money(d2,z['kind'],z['amt'],t,m,source=source)
                 put_srv(z['deal'],'deal',d2,'bill-paid',by,d);z['status']='paid';z['paid']=dt.datetime.now(MSK).isoformat(timespec='seconds');z['method']=m;put_srv(i,'bill',z,'bill-paid',by,old)
-                if left>0:put_srv(nid(),'unk',{'ts':z['paid'],'amt':left,'deal':z['deal'],'status':'open','why':'Переплата сверх суммы к оплате.'},'unk',by)
+                if left>0:put_srv(nid(),'unk',{'ts':z['paid'],'date':t,'amt':left,'deal':z['deal'],'status':'open','method':m,
+                                            'source':source,'why':'Переплата сверх суммы к оплате.'},'unk',by)
                 db.commit();return {}
             raise Bad('Неверный запрос.')
         i=str(b.get('deal',''));d=ID.fullmatch(i) and doc(i);k=b.get('kind')
         if not d or d.get('status')!='active':raise Bad('Выкуп не найден.')
-        try:A=int(round(float(b.get('amt'))))
-        except Exception:raise Bad('Введите сумму.')
-        if A<1 or A>10000000:raise Bad('Введите сумму.')
+        A=positive_amount(b.get('amt'))
         if any(z.get('deal')==i and z.get('status')=='open' for _,z in docs_of('bill')):raise Bad('У клиента уже есть выставленный платёж. Сначала отмените его или дождитесь оплаты.')
         if k=='period':
             pl=plan_period(d,A,t)
@@ -623,16 +1254,51 @@ def owner_act(p,b,ro,x,P):
         else:raise Bad('Неверный запрос.')
         bid=nid();put_srv(bid,'bill',{'deal':i,'kind':k,'amt':A,'status':'open','ts':dt.datetime.now(MSK).isoformat(timespec='seconds'),'by':by or 'owner'},'bill',by);db.commit();return {'id':bid}
     if p=='/api/unk':
-        i=str(b.get('id',''));z=ID.fullmatch(i) and doc(i)
-        if not z or z.get('status')!='open':raise Bad('Платёж уже разобран.')
+        i=str(b.get('id',''));record=ID.fullmatch(i) and row(i)
+        if not record or record[0]!='unk' or record[1].get('status')!='open':raise Bad('Платёж уже разобран.')
+        z=record[1]
         old=dict(z)
-        if b.get('do')=='done':z['status']='done';z['note']=str(b.get('note') or '')[:200];put_srv(i,'unk',z,'unk-done',by,old);db.commit();return {}
-        if b.get('do')=='apply':
+        if b.get('do')=='done':
+            note=str(b.get('note') or '').strip()[:200]
+            if not note:raise Bad('Укажите результат сверки в комментарии.')
+            z.update(status='done',note=note,resolvedAt=dt.datetime.now(MSK).isoformat());put_srv(i,'unk',z,'unk-done',by,old)
+            db.commit();return {}
+        if b.get('do') in ('preview','apply'):
             d=doc(z.get('deal',''))
-            if not d or b.get('kind') not in('period','debt'):raise Bad('Выберите, куда засчитать платёж.')
-            d2=copy.deepcopy(d);left=apply_money(d2,b['kind'],z['amt'],t,'СБП',z.get('qr'))
-            put_srv(z['deal'],'deal',d2,'unk-apply',by,d);z['status']='applied';put_srv(i,'unk',z,'unk-apply',by,old)
-            if left>0:put_srv(nid(),'unk',{'ts':dt.datetime.now(MSK).isoformat(timespec='seconds'),'amt':left,'deal':z['deal'],'status':'open','why':'Переплата сверх суммы к оплате.'},'unk',by)
+            if not d or d.get('status')!='active' or b.get('kind') not in ('period','debt','original'):raise Bad('Выберите, куда засчитать платёж.')
+            qr=doc(z.get('qr') or '') or {}
+            date=received_date(z.get('date') or b.get('date'),t)
+            if date<max(d['start'],qr.get('date',d['start'])):raise Bad('Дата получения денег раньше оформления выкупа или QR.')
+            reference=str(b.get('reference') or '').strip()[:180]
+            if z.get('unconfirmed') and (not reference or not b.get('verified')):raise Bad('Подтвердите поступление по выписке и введите номер банковской операции.')
+            if reference and any(j!=z.get('qr') and q.get('status')=='paid' and reference.lower() in {str(q.get(k) or '').lower() for k in ('tid','trxId','refTransactionId')} for j,q in docs_of('qr')):
+                raise Bad('Эта банковская операция уже учтена в другом QR.')
+            if reference and z.get('unconfirmed') and any(str(link.get('reference') or '').strip().lower()==reference.lower() and link.get('date')==date for _,link in docs_of('statementlink')):
+                raise Bad('Операция уже связана со строкой выписки. Проверьте запись о платеже в выкупе.')
+            method=z.get('method','СБП');fees=qr.get('fees') or fee_rates(method);source=z.get('source') or z.get('qr') or i
+            d2=copy.deepcopy(d)
+            if b['kind']=='original':
+                quote=payment_quote(d2,qr.get('options') or {'count':len(qr.get('ks') or []) or 1},date,qr.get('settings'))
+                if quote['total']!=z['amt'] or [x['k'] for x in quote['items']]!=qr.get('ks'):
+                    raise Bad('Сумма или периоды исходного QR изменились. Выберите взнос или погашение долга.')
+                apply_payment(d2,quote,method,z.get('qr'),fees=fees);left=0
+            else:left=apply_money(d2,b['kind'],z['amt'],date,method,z.get('qr'),fees=fees,source=source)
+            parts=[payment for kind,key,payment in receipt_parts(d2) if receipt_part(d,kind,key)!=payment and payment.get('source')==source]
+            plan={'version':d.get('_v',0),'date':date,'pen':money(sum(minor(p.get('pen') or 0) for p in parts)),
+                  'allocated':money(minor(z['amt'])-minor(left)),'surplus':left,'debt':(d2.get('debt') or {}).get('amt',0),'debtDue':(d2.get('debt') or {}).get('due')}
+            if b['do']=='preview':return plan
+            check_version(d,b)
+            if b.get('expected')!=plan:raise Bad('Расчёт изменился. Проверьте оплату ещё раз.')
+            if qr:
+                qr_before=copy.deepcopy(qr);qr.update(paidDate=date,status='paid',fees=fees)
+                if reference:qr.setdefault('refTransactionId',reference)
+                put_srv(z['qr'],'qr',qr,'qr-reconciled',by,qr_before)
+            put_srv(z['deal'],'deal',d2,'unk-apply',by,d)
+            z.update(status='applied',date=date,resolvedAt=dt.datetime.now(MSK).isoformat())
+            if reference:z['reference']=reference
+            put_srv(i,'unk',z,'unk-apply',by,old)
+            if left>0:put_srv(nid(),'unk',{'ts':z['resolvedAt'],'date':date,'amt':left,'deal':z['deal'],'qr':z.get('qr'),'source':source,
+                                         'status':'open','method':method,'why':'Переплата сверх суммы к оплате.'},'unk',by)
             db.commit();return {}
     raise Bad('Неверный запрос.')
 
@@ -646,8 +1312,149 @@ def action_deal(b,ro,x,permission='pay',allow_client=False):
     if not allowed:raise Bad('Нет доступа.')
     return key,d
 
+def deal_payment_date(d,value,t):
+    date=received_date(value,t)
+    if date<d['start']:raise Bad('Дата получения денег раньше даты оформления выкупа.')
+    return date
+
+def statement_allocation(d,options,date,operation):
+    if not isinstance(operation,dict) or operation.get('date')!=date:
+        raise Bad('Дата оплаты должна совпадать со строкой выписки.')
+    statement_key(operation)
+    received=money(operation['amount']);mode=options.get('mode')
+    source=nid();rest=0;credit=0;reductions=[]
+    if mode in ('bank-period','bank-debt'):
+        left=apply_money(d,'debt' if mode=='bank-debt' else 'period',received,date,'СБП',source=source,settle_debt=False)
+        items=[]
+        for kind,_,p in receipt_parts(d):
+            if p.get('source')==source:
+                p['group']=source;items.append(p)
+        total=money(minor(received)-minor(left));pen=money(sum(minor(p.get('pen') or 0) for p in items))
+        quote={'mode':mode,'date':date,'principal':money(minor(total)-minor(pen)),'pen':pen,'total':total,'bonus':0}
+    else:
+        quote=payment_quote(d,options,date)
+        if minor(received)<minor(quote['total']):raise Bad('Поступление меньше выбранных взносов. Выберите меньше взносов или оплату ближайшего взноса фактической суммой.')
+        source=apply_payment(d,quote,'СБП');left=money(minor(received)-minor(quote['total']))
+    if left:
+        materialize_schedule(d)
+        credit,reductions=reduce_tail(d,left);rest=money(minor(left)-minor(credit))
+        if credit:
+            group=next((p.get('group') for _,_,p in receipt_parts(d) if p.get('source')==source),None)
+            d.setdefault('early',[]).append({'date':date,'amt':credit,'paid':credit,'method':'СБП','source':source,
+                                             'group':group,'fees':fee_rates('СБП'),'kind':'statement-credit','reductions':reductions})
+    debt=d.get('debt') or {}
+    return {**quote,'received':received,'credit':credit,'surplus':rest,'rest':debt.get('amt',0),'debtDue':debt.get('due')},source
+
 def check_version(d,b):
     if b.get('version')!=d.get('_v',0):raise Bad('Данные изменились. Обновите экран и проверьте расчёт ещё раз.')
+
+def grant_deferral(b, ro, x, t, by):
+    key,d = action_deal({'deal': b.get('id') or b.get('deal')},ro,x,permission='early',allow_client=True)
+    I = info(d,t)
+    if d.get('status') != 'active' or not I['un']:
+        raise Bad('Отсрочка недоступна.')
+    if ro == 'client':
+        if any(g.get('by') == 'client' for g in d.get('defer') or []):
+            raise Bad('Вы уже использовали отсрочку по этому выкупу.')
+        if I['od'] or (I['g'] or {}).get('over'):
+            raise Bad('Отсрочка доступна до начала просрочки.')
+        installment = I['x']
+        days = whole(cfgv('dd',2),'срок отсрочки')
+        try:
+            until = add(payment_deadline(d,installment),days)
+        except OverflowError:
+            raise Bad('Проверьте срок отсрочки.')
+    else:
+        check_version(d,b)
+        period = whole(b.get('period'),'номер периода')
+        installment = next((r for r in I['un'] if r['k'] == period),None)
+        if not installment:
+            raise Bad('Выберите неоплаченный период.')
+        until = valid_date(b.get('until'))
+    current_deadline = payment_deadline(d,installment)
+    if until <= current_deadline or until < t:
+        raise Bad('Выберите дату позже действующего срока оплаты.')
+    old = copy.deepcopy(d)
+    grant = {'date':t,'due':installment['due'],'k':installment['k'],'until':until,
+             'days':diff(until,current_deadline),'by':'client' if ro == 'client' else 'admin'}
+    d.setdefault('defer',[]).append(grant)
+    put_srv(key,'deal',d,'defer-client' if ro == 'client' else 'defer-period',by,old)
+    tell(d['client'],f"Отсрочка оформлена. Взнос {rub(installment['amt'])} по графику до {dm(D(installment['due']))} можно внести до {dm(D(until))} включительно.")
+    if ro == 'client':say(f"Клиент {(doc(x) or {}).get('name','')} взял отсрочку до {dm(D(until))}.")
+    return grant
+
+def used_schedule_request(key,d):
+    return d.get('client_rescheduled') or any(r.get('deal')==key and r.get('status')=='approved' for _,r in docs_of('reschedule'))
+
+def save_new_schedule(key,d,plan,t,by,request_id=None):
+    old=copy.deepcopy(d)
+    materialize_schedule(d)
+    recover_reductions(key,d)
+    d.setdefault('schedule_history',[]).append({'date':t,'request':request_id,'schedule':copy.deepcopy(d['schedule']),'pay':d['pay'],'n':d['n']})
+    retained={(r['k'],r['due']) for r in plan['schedule']}
+    future={(r['k'],r['due']) for r in d['schedule'] if str(r['k']) not in d.get('paid',{}) and r['due']>=t and payment_deadline(d,r)==r['due']}
+    final=plan['after'][-1]
+    for credit in (d.get('bonuses') or [])+(d.get('early') or []):
+        for change in credit.get('reductions') or []:
+            pair=(change['k'],change['due'])
+            if pair in future and pair not in retained:
+                change.setdefault('original',{'k':change['k'],'due':change['due']})
+                change.update(k=final['k'],due=final['due'])
+    d.setdefault('original_n',d['n']);d['schedule']=plan['schedule'];d['shift']=0
+    d['pay']=plan['pay'];d['last']=plan['lastAmount'];d['n']=max(row_['k'] for row_ in plan['schedule'])
+    if request_id:d['client_rescheduled']=True
+    put_srv(key,'deal',d,'reschedule-approve' if request_id else 'reschedule-manual',by,old)
+    gap = plan['gap']
+    interval = f" Между двумя последними взносами {gap} дн." if gap is not None and gap < plan['step'] else ''
+    tell(d['client'],f"График изменён. Первый взнос нового графика {rub(plan['firstAmount'])} до {dm(D(plan['first']))}. Последний платёж {rub(plan['lastAmount'])} до {dm(D(plan['last']))}.{interval}")
+
+PREPARATION = ('inspection','repair','ready')
+
+def update_preparation(bike_id,status,t,by,returned=False):
+    record = row(bike_id)
+    if not record or record[0] != 'bike':
+        raise Bad('Велосипед не найден.')
+    old = record[1]
+    preparation = {'status':status,'updated':t}
+    returned_on = t if returned else (old.get('preparation') or {}).get('returned')
+    if returned_on:preparation['returned'] = returned_on
+    data = {**old,'preparation':preparation}
+    if returned:data['archived'] = False
+    put_srv(bike_id,'bike',data,'prepare-bike',by,old)
+
+def bike_available(bike_id,deal_id):
+    record = row(bike_id)
+    return bool(record and record[0]=='bike' and not record[1].get('archived') and not record[1].get('wo') and
+                (record[1].get('preparation') or {}).get('status','ready')=='ready' and not any(
+        i!=deal_id and d.get('bike')==bike_id and d.get('status')=='active' for i,d in docs_of('deal')
+    ))
+
+def validate_new_deal(d,t):
+    start=received_date(d.get('start'),t)
+    total=minor(positive_amount(d.get('total')))
+    down=minor(positive_amount(d['down'])) if d.get('down') not in (None,0) else 0
+    if down>total:raise Bad('Первоначальный взнос больше цены выкупа.')
+    if not isinstance(d.get('n'),int) or isinstance(d['n'],bool) or not 1<=d['n']<=5200 or d.get('type') not in ('w','m'):
+        raise Bad('Укажите срок выкупа.')
+    if d.get('shift') or d.get('schedule') is not None or d.get('early') or d.get('debt') or d.get('dpays') or d.get('bonuses'):
+        raise Bad('При оформлении требуется исходный график.')
+    if total==down:
+        if d.get('paid') or d.get('pay')!=0 or d.get('last')!=0:raise Bad('Цена уже покрыта первоначальным взносом.')
+        if d.get('down_method') not in ('наличные','СБП','перевод'):raise Bad('Выберите способ оплаты.')
+        return
+    payment=minor(positive_amount(d.get('pay'))) if d['n']>1 else 0
+    last=minor(positive_amount(d.get('last')))
+    if down+payment*(d['n']-1)+last!=total:raise Bad('Сумма взносов должна равняться цене выкупа.')
+    paid=d.get('paid') or {};first=paid.get('1') if isinstance(paid,dict) else None
+    if not isinstance(first,dict) or len(paid)!=1 or first.get('date')!=start or first.get('pen',0)!=0 or first.get('part'):
+        raise Bad('Проверьте оплату первого взноса при оформлении.')
+    if minor(positive_amount(first.get('amt')))!=(payment if d['n']>1 else last) or first.get('method') not in ('наличные','СБП','перевод'):
+        raise Bad('Сумма и способ оплаты первого взноса должны совпадать с графиком.')
+
+def close_pending_schedule(key,t,by):
+    for request_id,request in docs_of('reschedule'):
+        if request.get('deal')==key and request.get('status')=='pending':
+            previous=dict(request);request.update(status='closed',decided=t);put_srv(request_id,'reschedule',request,'reschedule-close',by,previous)
 
 def move_payment(d,source,target,t):
     source=str(whole(source,'номер периода'));target=whole(target,'номер периода')
@@ -665,32 +1472,42 @@ def move_payment(d,source,target,t):
     original_debt=copy.deepcopy(d.pop('debt',None))
     other_debt=original_debt if original_debt and original_debt['k']!=int(source) else None
     d['dpays']=[z for z in d.get('dpays',[]) if z['k']!=int(source)]
-    restore_tail(d,old_bonus)
-    if bonus:d['bonuses'].remove(bonus)
-    pen=penalty(row_['amt'],pdays(row_['due'],payment['date'],d),d.get('pen'))
-    cash=payment['amt']+payment.get('pen',0)
+    retained=[]
+    if bonus:
+        retained=[change for change in bonus.get('reductions') or [] if str(change['k']) in d['paid']]
+        released=[change for change in bonus.get('reductions') or [] if change not in retained]
+        restore_reductions(d,{**bonus,'amt':money(minor(old_bonus)-sum(minor(x['amt']) for x in retained)),'reductions':released})
+        d['bonuses'].remove(bonus)
+    pen=penalty(row_['amt'],pdays(payment_deadline(d,row_),payment['date'],d),d.get('pen'))
+    cash=money(minor(payment['amt'])+minor(payment.get('pen',0)))
     if cash<=pen:raise Bad('Суммы первой оплаты недостаточно для неустойки целевого периода на дату получения денег.')
-    principal=min(row_['amt'],cash-pen);remainder=row_['amt']-principal;excess=cash-pen-principal
-    put_paid(d,target,payment['date'],principal,pen,payment['method'],payment.get('qr'),remainder>0)
+    principal=min(row_['amt'],money(minor(cash)-minor(pen)))
+    remainder=money(minor(row_['amt'])-minor(principal));excess=money(minor(cash)-minor(pen)-minor(principal))
+    source_id=payment.get('source') or payment.get('qr') or group
+    receipts=payment.get('fees') or fee_rates(payment['method'],estimated=True)
+    put_paid(d,target,payment['date'],principal,pen,payment['method'],payment.get('qr'),remainder>0,source=source_id,fees=receipts)
     d['paid'][str(target)].update(group=group,due=row_['due'],batch_count=payment.get('batch_count',1),moved_from=int(source))
     if remainder:
         original_terms=original_debt if original_debt and original_debt['k']==int(source) else (supplements[0].get('pv') if supplements else None)
         debt_due=original_terms['due'] if original_terms else add(payment['date'],int(cfgv('dbd',3)))
         d['debt']={'k':target,'amt':remainder,'due':debt_due}
     if excess:
-        used=reduce_tail(d,excess)
+        used,changes=reduce_tail(d,excess)
         if used!=excess:raise Bad('Переплата превышает остаток выкупа. Выберите другой период.')
-        d.setdefault('early',[]).append({'date':payment['date'],'paid':excess,'amt':excess,'method':payment['method'],'group':group,'kind':'move-credit'})
+        d.setdefault('early',[]).append({'date':payment['date'],'paid':excess,'amt':excess,'method':payment['method'],'group':group,'kind':'move-credit','source':source_id,'fees':receipts,'reductions':changes})
     for supplement in supplements:
         received=supplement['amt']+supplement.get('pen',0);cash+=received
+        source_id=supplement.get('source') or supplement.get('qr') or nid()
+        receipts=supplement.get('fees') or fee_rates(supplement['method'],estimated=True)
         remaining_cash=received
         if dstat(d,supplement['date']):
-            remaining_cash=apply_debt(d,received,supplement['date'],supplement['method'],supplement.get('qr'))
+            remaining_cash=apply_debt(d,received,supplement['date'],supplement['method'],supplement.get('qr'),source=source_id,fees=receipts)
             applied=d['dpays'][-1];applied['group']=group
             principal+=applied['amt'];pen+=applied['pen']
         if remaining_cash:
-            if reduce_tail(d,remaining_cash)!=remaining_cash:raise Bad('Переплата превышает остаток выкупа. Выберите другой период.')
-            d.setdefault('early',[]).append({'date':supplement['date'],'paid':remaining_cash,'amt':remaining_cash,'method':supplement['method'],'group':group,'kind':'move-credit'})
+            used,changes=reduce_tail(d,remaining_cash)
+            if used!=remaining_cash:raise Bad('Переплата превышает остаток выкупа. Выберите другой период.')
+            d.setdefault('early',[]).append({'date':supplement['date'],'paid':remaining_cash,'amt':remaining_cash,'method':supplement['method'],'group':group,'kind':'move-credit','source':source_id,'fees':receipts,'reductions':changes})
             excess+=remaining_cash
     remainder=(d.get('debt') or {}).get('amt',0)
     if other_debt:
@@ -700,8 +1517,11 @@ def move_payment(d,source,target,t):
     if bonus:
         grouped=[p for p in d['paid'].values() if p.get('group')==group]
         base=sum(p['amt'] for p in grouped)+sum(p['paid'] for p in d.get('early',[]) if p.get('group')==group)+sum(p['amt'] for p in d.get('dpays',[]) if p.get('group')==group)
-        new_bonus=reduce_tail(d,penalty(base,1,bonus['rate']))
-        d.setdefault('bonuses',[]).append({**bonus,'amt':new_bonus,'base':base,'ks':[int(k) for k,p in d['paid'].items() if p.get('group')==group]})
+        retained_total=sum(minor(x['amt']) for x in retained)
+        wanted=minor(penalty(base,1,bonus['rate']))-retained_total
+        if wanted<0:raise Bad('Сначала отмените более позднюю оплату взноса, на который уже ушла часть скидки.')
+        credited,changes=reduce_tail(d,money(wanted));new_bonus=money(retained_total+minor(credited))
+        d.setdefault('bonuses',[]).append({**bonus,'amt':new_bonus,'base':base,'ks':[int(k) for k,p in d['paid'].items() if p.get('group')==group],'reductions':retained+changes})
     return {'source':int(source),'target':target,'cash':cash,'principal':principal,'pen':pen,'debt':remainder,'excess':excess,'oldBonus':old_bonus,'bonus':new_bonus}
 
 def cancel_payment(d,key):
@@ -716,55 +1536,197 @@ def cancel_payment(d,key):
     if d.get('debt') and str(d['debt']['k']) in keys:d.pop('debt')
     bonuses=[z for z in d.get('bonuses',[]) if group and z['group']==group]
     credits=[z for z in d.get('early',[]) if group and z.get('group')==group]
-    restore_tail(d,sum(z['amt'] for z in bonuses+credits))
+    for credit in bonuses+credits:restore_reductions(d,credit)
     d['bonuses']=[z for z in d.get('bonuses',[]) if z not in bonuses]
     d['early']=[z for z in d.get('early',[]) if z not in credits]
     return len(keys)
 
+def cancel_debt_payment(d):
+    payments=d.get('dpays') or []
+    if not payments:raise Bad('Оплата долга уже отменена.')
+    payment=payments[-1]
+    if d.get('debt') and d['debt']['k']!=payment['k']:raise Bad('Сначала закройте или отмените текущий долг.')
+    credits=[x for x in d.get('early') or [] if x.get('kind')=='statement-credit' and x.get('source')==payment.get('source')]
+    if credits:
+        materialize_schedule(d)
+        for credit in credits:restore_reductions(d,credit)
+        d['early']=[x for x in d['early'] if x not in credits]
+    payments.pop();d['debt']=payment['pv']
+    return payment.get('source') or payment.get('qr')
+
+def clear_statement_surplus(key,sources,t,by):
+    for i,z in docs_of('unk'):
+        if z.get('deal')==key and z.get('source') in sources and z.get('status')=='open' and not z.get('qr'):
+            old=dict(z);z.update(status='void',resolvedAt=t)
+            put_srv(i,'unk',z,'undo-statement-surplus',by,old)
+
 def workflow_action(p,b,ro,x):
     """Authorised business actions run in one database transaction under L."""
     t=tod();by=str(x[1].get('name',''))[:40] if ro=='admin' else ''
+    if p=='/api/defer':return grant_deferral(b,ro,x,t,by)
+    if p=='/api/calendar':
+        key,d=action_deal(b,ro,x,permission='deals',allow_client=True)
+        if d.get('status')!='active':raise Bad('Выкуп закрыт.')
+        return download_file('platezhi.ics','text/calendar; charset=utf-8',calendar_data(key,d,t))
+    if p=='/api/payment-report':return payment_report_action(b,ro,x,t,by)
+    if p=='/api/statement':
+        if not (ro=='owner' or (ro=='admin' and 'pay' in x[1].get('perms',[]))):raise Bad('Нет доступа.')
+        if b.get('do')=='upload':
+            operations,unfiltered,skipped=read_statement(b.get('file'))
+            return {'rows':statement_review(operations),'unfiltered':unfiltered,'skipped':skipped}
+        if b.get('do')=='link' and isinstance(b.get('operation'),dict):
+            return link_statement(b['operation'],str(b.get('deal') or ''),str(b.get('source') or ''))
+        raise Bad('Загрузите выписку.')
+    if p=='/api/pay-debt':
+        key,d=action_deal(b,ro,x);date=deal_payment_date(d,b.get('date',t),t);amount=positive_amount(b.get('amount'))
+        debt=dstat(d,date);method=b.get('method')
+        if not debt or d.get('status')!='active':raise Bad('Долга нет.')
+        if not debt['pen']<amount<=debt['total']:raise Bad('Сумма оплаты долга изменилась. Проверьте расчёт.')
+        duplicate=possible_duplicate(key,date,amount)
+        if b.get('preview'):return {'version':d.get('_v',0),'duplicate':duplicate,'pen':debt['pen'],'total':amount}
+        check_version(d,b)
+        if method not in ('наличные','СБП','перевод'):raise Bad('Выберите способ оплаты.')
+        if duplicate and b.get('confirmedDuplicate')!=duplicate['source']:raise Bad('По QR уже есть платёж на эту сумму. Проверьте операцию.')
+        old=copy.deepcopy(d);apply_debt(d,amount,date,method);put_srv(key,'deal',d,'pay-debt',by,old)
+        return {'remaining':(d.get('debt') or {}).get('amt',0)}
+    if p=='/api/cancel-debt-pay':
+        key,d=action_deal(b,ro,x);check_version(d,b)
+        if d.get('status')!='active':raise Bad('Выкуп закрыт.')
+        old=copy.deepcopy(d);source=cancel_debt_payment(d)
+        if source:clear_statement_surplus(key,{source},t,by)
+        put_srv(key,'deal',d,'cancel-debt-pay',by,old)
+        return {}
+    if p=='/api/bike-preparation':
+        if not (ro=='owner' or (ro=='admin' and 'bikes' in x[1].get('perms',[]))):raise Bad('Нет доступа.')
+        i=str(b.get('bike') or '');record=ID.fullmatch(i) and row(i)
+        if not record or record[0]!='bike' or record[1].get('archived'):raise Bad('Велосипед недоступен.')
+        check_version(record[1],b)
+        if any(d.get('bike')==i and d.get('status')=='active' for _,d in docs_of('deal')):raise Bad('Велосипед сейчас под выкупом.')
+        status=b.get('status')
+        if status not in PREPARATION:raise Bad('Выберите статус подготовки.')
+        update_preparation(i,status,t,by)
+        return {}
+    if p=='/api/bike-writeoff':
+        if not (ro=='owner' or (ro=='admin' and 'bikes' in x[1].get('perms',[]))):raise Bad('Нет доступа.')
+        bike_id=str(b.get('bike') or '');record=ID.fullmatch(bike_id) and row(bike_id)
+        if not record or record[0]!='bike' or record[1].get('wo'):raise Bad('Велосипед недоступен для списания.')
+        bike=record[1];check_version(bike,b)
+        active=[(i,d) for i,d in docs_of('deal') if d.get('bike')==bike_id and d.get('status')=='active']
+        if len(active)>1 or (active[0][0] if active else None)!=b.get('deal'):
+            raise Bad('Выкуп велосипеда изменился. Обновите экран.')
+        date=received_date(b.get('date'),t);loss=positive_amount(b.get('loss')) if b.get('loss')!=0 else 0
+        reason=str(b.get('reason') or '').strip()[:80]
+        if not reason:raise Bad('Укажите причину списания.')
+        if active:
+            key,d=active[0];check_version(d,{'version':b.get('dealVersion')})
+            if date<d['start'] or any(p.get('date','')>date for _,_,p in receipt_parts(d)):
+                raise Bad('Дата списания должна быть после оформления и всех полученных платежей.')
+            old=copy.deepcopy(d);d.update(status='lost',closed=date)
+            put_srv(key,'deal',d,'writeoff-deal',by,old)
+            close_pending_schedule(key,t,by)
+            for bill_id,bill in docs_of('bill'):
+                if bill.get('deal')==key and bill.get('status')=='open':
+                    put_srv(bill_id,'bill',{**bill,'status':'void'},'bill-void',by,bill)
+        old=copy.deepcopy(bike)
+        bike.update(archived=True,wo={'date':date,'loss':loss,'reason':reason,'note':str(b.get('note') or '')[:200]})
+        put_srv(bike_id,'bike',bike,'writeoff-bike',by,old)
+        return {}
+    if p=='/api/deal-note':
+        key,d=action_deal(b,ro,x,permission='deals');check_version(d,b)
+        old=copy.deepcopy(d);note=str(b.get('note') or '').strip()
+        if len(note)>1000:raise Bad('В заметке должно быть до 1000 символов.')
+        if note:d['private_note']={'text':note,'date':t,'by':by or 'Владелец'}
+        else:d.pop('private_note',None)
+        put_srv(key,'deal',d,'deal-note',by,old)
+        return {}
+    if p=='/api/return-deal':
+        key,d=action_deal(b,ro,x,permission='deals');check_version(d,b)
+        if d.get('status')!='active':raise Bad('Выкуп закрыт.')
+        amount=whole(b.get('refund',0),'сумму возврата')
+        if amount<0:raise Bad('Укажите сумму возврата или 0.')
+        old=copy.deepcopy(d);d.update(status='seized',closed=t,refund=amount)
+        put_srv(key,'deal',d,'return-deal',by,old)
+        update_preparation(d['bike'],'inspection',t,by,returned=True)
+        close_pending_schedule(key,t,by)
+        return {}
     if p in ('/api/payquote','/api/pay','/api/move-payment','/api/cancel-payment'):
         key,d=action_deal(b,ro,x,allow_client=p=='/api/payquote')
         if d.get('status')!='active':raise Bad('Выкуп закрыт.')
         if p=='/api/payquote':
-            date=valid_date(b.get('date',t)) if ro in ('owner','admin') else t
-            return {**payment_quote(d,b.get('options') or {},date),'version':d.get('_v',0)}
+            date=deal_payment_date(d,b.get('date',t),t) if ro in ('owner','admin') else t
+            options=b.get('options') or {};statement=b.get('statement')
+            if not isinstance(options,dict):raise Bad('Выберите способ оплаты.')
+            if statement is not None:
+                if ro=='client':raise Bad('Нет доступа.')
+                quote,_=statement_allocation(copy.deepcopy(d),options,date,statement)
+            else:quote=payment_quote(d,options,date)
+            if ro in ('owner','admin'):
+                duplicate=possible_duplicate(key,date,quote.get('received',quote['total']))
+                if duplicate:quote['duplicate']=duplicate
+            return {**quote,'version':d.get('_v',0)}
         check_version(d,b);old=copy.deepcopy(d)
         if p=='/api/pay':
-            date=valid_date(b.get('date',t));method=b.get('method')
+            date=deal_payment_date(d,b.get('date',t),t);method=b.get('method')
             if method not in ('наличные','СБП','перевод'):raise Bad('Выберите способ оплаты.')
-            quote=payment_quote(d,b.get('options') or {},date)
+            options=b.get('options') or {};statement=b.get('statement')
+            if not isinstance(options,dict):raise Bad('Выберите способ оплаты.')
+            if statement is not None:
+                if method!='СБП' or not isinstance(statement,dict):raise Bad('Проверьте строку выписки.')
+                if statement_review([statement])[0]['state'] in ('exact','linked'):raise Bad('Этот перевод уже учтён. Обновите сверку.')
+                quote,source=statement_allocation(d,options,date,statement)
+            else:quote=payment_quote(d,options,date)
             if 'expected_quote' in b:
                 expected=b['expected_quote']
-                if not isinstance(expected,dict) or {k:v for k,v in expected.items() if k!='version'}!=quote:
+                if not isinstance(expected,dict) or {k:v for k,v in expected.items() if k not in ('version','duplicate')}!=quote:
                     raise Bad('Условия оплаты изменились. Проверьте новый расчёт.')
             if b.get('expected_total',quote['total'])!=quote['total'] or b.get('expected_bonus',quote['bonus'])!=quote['bonus']:
                 raise Bad('Условия оплаты изменились. Проверьте новый расчёт.')
-            apply_payment(d,quote,method)
+            duplicate=possible_duplicate(key,date,quote.get('received',quote['total']))
+            if duplicate and b.get('confirmedDuplicate')!=duplicate['source']:raise Bad('По QR уже есть платёж на эту сумму. Проверьте операцию.')
+            if statement is None:apply_payment(d,quote,method)
             put_srv(key,'deal',d,'pay-periods',by,old)
+            if statement is not None:
+                if quote['surplus']:
+                    put_srv(nid(),'unk',{'ts':dt.datetime.now(MSK).isoformat(),'date':date,'amt':quote['surplus'],'deal':key,
+                                        'source':source,'status':'open','why':'Переплата из выписки сверх остатка выкупа.'},'unk',by)
+                link_statement(statement,key,source)
             return quote
+        recover_reductions(key,d)
         if p=='/api/move-payment':
             preview=move_payment(d,b.get('source'),b.get('target'),t)
             if b.get('preview'):return preview
             put_srv(key,'deal',d,'move-payment',by,old)
             return preview
         count=cancel_payment(d,b.get('period'))
+        removed={p['source'] for k,p in old['paid'].items() if k not in d['paid'] and p.get('source')}
+        if removed:clear_statement_surplus(key,removed,t,by)
         put_srv(key,'deal',d,'cancel-payment',by,old)
         return {'count':count}
     if p=='/api/reschedule-request':
         key,d=action_deal(b,ro,x,permission='deals',allow_client=True)
         if ro!='client' or d.get('status')!='active':raise Bad('Заявка недоступна.')
-        plan=replan(d,b.get('first'),b.get('pay'),t)
+        if used_schedule_request(key,d):raise Bad('Перенос по заявке уже использован для этого выкупа.')
+        anchor,_,_=client_schedule_bounds(d,t)
+        plan=replan(d,b.get('first'),b.get('pay'),t,anchor)
         if b.get('preview'):return plan
         check_version(d,b)
+        if b.get('asOf',t)!=t:raise Bad('Наступил новый день. Откройте заявку заново и проверьте расчёт.')
         if any(z.get('deal')==key and z.get('status')=='pending' for _,z in docs_of('reschedule')):raise Bad('Заявка уже ожидает решения.')
         request_id=nid()
-        request={'deal':key,'client':x,'first':plan['first'],'pay':plan['pay'],'reason':str(b.get('reason') or '')[:1000],
-                 'status':'pending','created':dt.datetime.now(MSK).isoformat(),'balance':plan['balance']}
+        request={'deal':key,'client':x,'anchor':anchor,'reason':str(b.get('reason') or '')[:1000],
+                 'status':'pending','created':dt.datetime.now(MSK).isoformat(),**reschedule_details(plan)}
         put_srv(request_id,'reschedule',request,'reschedule-request')
         say(f"Заявка на изменение графика: {(doc(x) or {}).get('name','')}, {rub(plan['pay'])}, следующий платёж {dm(D(plan['first']))}.")
         return {'id':request_id}
+    if p=='/api/reschedule-manual':
+        key,d=action_deal(b,ro,x,permission='deals')
+        if d.get('status')!='active':raise Bad('Выкуп закрыт.')
+        plan=replan(d,b.get('first'),b.get('pay'),t)
+        if b.get('preview'):return {**plan,'version':d.get('_v',0)}
+        check_version(d,b)
+        if b.get('asOf',t)!=t:raise Bad('Наступил новый день. Рассчитайте график ещё раз.')
+        save_new_schedule(key,d,plan,t,by)
+        return plan
     if p=='/api/reschedule':
         request_id=str(b.get('id') or '');record=ID.fullmatch(request_id) and row(request_id)
         if not record or record[0]!='reschedule' or record[1].get('status')!='pending':raise Bad('Заявка уже рассмотрена.')
@@ -776,18 +1738,16 @@ def workflow_action(p,b,ro,x):
             put_srv(request_id,'reschedule',request,'reschedule-reject',by,old_request)
             tell(d['client'],'Заявка на изменение графика отклонена.'+(' '+request['note'] if request['note'] else ' Свяжитесь с нами для уточнения условий.'))
             return {}
-        plan=replan(d,b.get('first',request['first']),b.get('pay',request['pay']),t)
+        if used_schedule_request(key,d):raise Bad('Перенос по заявке уже использован для этого выкупа.')
+        anchor,_,_=client_schedule_bounds(d,t,request.get('anchor'))
+        plan=replan(d,b.get('first',request['first']),b.get('pay',request['pay']),t,anchor)
         if action=='preview':return {**plan,'version':d.get('_v',0)}
         if action!='approve':raise Bad('Выберите действие.')
-        check_version(d,b);old=copy.deepcopy(d)
-        materialize_schedule(d)
-        d.setdefault('schedule_history',[]).append({'date':t,'request':request_id,'schedule':copy.deepcopy(d['schedule']),'pay':d['pay'],'n':d['n']})
-        d.setdefault('original_n',d['n']);d['schedule']=plan['schedule'];d['shift']=0
-        d['pay']=plan['pay'];d['last']=plan['lastAmount'];d['n']=max(row_['k'] for row_ in plan['schedule'])
-        put_srv(key,'deal',d,'reschedule-approve',by,old)
-        request.update(status='approved',decided=t,first=plan['first'],pay=plan['pay'],balance=plan['balance'],last=plan['last'])
+        check_version(d,b)
+        if b.get('asOf',t)!=t:raise Bad('Наступил новый день. Рассчитайте график ещё раз.')
+        save_new_schedule(key,d,plan,t,by,request_id)
+        request.update(status='approved',decided=t,**reschedule_details(plan))
         put_srv(request_id,'reschedule',request,'reschedule-approve',by,old_request)
-        tell(d['client'],f"График изменён. Платёж {rub(plan['pay'])}, ближайшая дата {dm(D(plan['first']))}, последний платёж {rub(plan['lastAmount'])} до {dm(D(plan['last']))}. Подробности — в приложении.")
         return plan
     if p=='/api/close-deal':
         key,d=action_deal(b,ro,x,permission='deals');check_version(d,b)
@@ -798,17 +1758,20 @@ def workflow_action(p,b,ro,x):
             item=doc(d[field])
             if item and not any(z.get(field)==d[field] and z.get('status')=='active' for _,z in docs_of('deal')):
                 previous=copy.deepcopy(item);item['archived']=True;put_srv(d[field],kind,item,'archive-'+kind,by,previous)
-        for request_id,request in docs_of('reschedule'):
-            if request.get('deal')==key and request.get('status')=='pending':
-                previous=copy.deepcopy(request);request.update(status='closed',decided=t);put_srv(request_id,'reschedule',request,'reschedule-close',by,previous)
+        close_pending_schedule(key,t,by)
         return {}
     raise Bad('Неверный запрос.')
+
+def attachment_headers(name):
+    return {'Content-Disposition':f'attachment; filename="{name}"','Cache-Control':'no-store',
+            'Access-Control-Allow-Origin':'https://web.telegram.org','Access-Control-Expose-Headers':'Content-Disposition'}
 
 class H(BaseHTTPRequestHandler):
     def send(s,c,b,t='application/json',x=None):
         s.send_response(c);s.send_header('Content-Type',t);s.send_header('Content-Length',str(len(b)))
         for k,v in {**HD,**(x or {})}.items():s.send_header(k,v)
-        s.end_headers();s.wfile.write(b)
+        s.end_headers()
+        if s.command!='HEAD':s.wfile.write(b)
     def ip(s):return s.headers.get('X-Forwarded-For','').split(',')[0].strip() or s.client_address[0]
     def user(s):
         ip=s.ip();t=time.time()
@@ -817,6 +1780,9 @@ class H(BaseHTTPRequestHandler):
         u=who(s.headers.get('X-Init',''))
         if u is None:FAIL[ip].append(t)
         return u
+    def do_HEAD(s):
+        if s.path.startswith(('/img/','/files/','/dl/')):return s.do_GET()
+        return s.send(404,b'')
     def do_GET(s):
         s.path=s.path.split('?')[0].split('#')[0]
         if s.path in('/api/all','/api/me','/api/log'):
@@ -828,7 +1794,7 @@ class H(BaseHTTPRequestHandler):
                     if ro not in('owner','admin'):return s.send(403,b'{}')
                     f=ro=='owner' or hasfin(x[1].get('perms',[]))
                     pay=ro=='owner' or 'pay' in x[1].get('perms',[])
-                    r=[{'kind':k,'id':i,'data':vw(k,json.loads(d),f)} for i,k,d in db.execute('select id,kind,data from docs') if (ro=='owner' or k!='admin') and k not in('qr','tch') and (pay or k not in('unk','bill')) and (ro=='owner' or k!='reschedule' or 'deals' in x[1].get('perms',[]))]
+                    r=[{'kind':k,'id':i,'data':payment_report_summary(json.loads(d)) if k=='paymentreport' else vw(k,json.loads(d),f)} for i,k,d in db.execute('select id,kind,data from docs') if (ro=='owner' or k!='admin') and k not in('qr','tch','statementlink') and (pay or k not in('unk','bill','paymentreport')) and (ro=='owner' or k!='reschedule' or 'deals' in x[1].get('perms',[]))]
                     tc=doc('tch') or {};r.append({'kind':'tch','id':'tch','data':{'on':bool(tq()),'merchant':tc.get('merchant',''),'account':tc.get('account',''),'jwt':bool(tc.get('jwt')),'hook':tc.get('hook','')} if ro=='owner' else {'on':bool(tq())}})
                 elif s.path=='/api/log':
                     if ro!='owner':return s.send(403,b'{}')
@@ -847,19 +1813,27 @@ class H(BaseHTTPRequestHandler):
                 dd=doc(q['deal']) or {}
                 if not(ro in('owner','admin') or (ro=='client' and dd.get('client')==x)):return s.send(403,b'{}')
                 if q.get('status')=='open':poll_soon()
-                return s.send(200,json.dumps({k:q.get(k) for k in('amt','kind','pen','payload','img','status','date')}).encode())
+                return s.send(200,json.dumps({k:q.get(k) for k in('amt','kind','pen','payload','img','status','date','expires')}).encode())
         if s.path.startswith('/img/'):
             t=time.time()
             for a in [a for a,(e,_) in IMG.items() if e<t]:IMG.pop(a,None)
             z=IMG.get(s.path[5:])
             if not z:return s.send(404,b'')
-            return s.send(200,z[1],'image/png',{'Content-Disposition':'attachment; filename="qr-oplata.png"','Cache-Control':'no-store'})
+            return s.send(200,z[1],'image/png',attachment_headers('qr-oplata.png'))
+        if s.path.startswith('/files/'):
+            with L:entry=FILE_DL.get(s.path[7:])
+            if not entry or entry[0]<time.time():return s.send(404,b'')
+            _,name,mime,data=entry
+            return s.send(200,data,mime,attachment_headers(name))
         if s.path.startswith('/dl/'):
             ip=('dl',s.ip());t=time.time();FAIL[ip]=[x for x in FAIL.get(ip,[]) if x>t-600]
             for a in [a for a,e in DL.items() if e<t]:DL.pop(a,None)
             if len(FAIL[ip])>=10 or DL.get(s.path[4:],0)<t:FAIL[ip].append(t);return s.send(404,b'')
-            d=dump();bset()
-            return s.send(200,d,'application/octet-stream',{'Content-Disposition':f'attachment; filename="velo-{dt.datetime.now(MSK):%Y-%m-%d-%H%M}.json"','Cache-Control':'no-store'})
+            d=dump()
+            if len(d)>MAX_BACKUP_BYTES:return s.send(413,'Копия больше 128 МиБ. Используйте снимок SQLite на сервере.'.encode(),'text/plain; charset=utf-8')
+            s.send(200,d,'application/octet-stream',attachment_headers(f'velo-{dt.datetime.now(MSK):%Y-%m-%d-%H%M}.json'))
+            if s.command!='HEAD':bset()
+            return
         f={'/':'index.html','/calc.js':'calc.js'}.get(s.path)
         if not f:return s.send(404,b'')
         s.send(200,open('static/'+f,'rb').read(),'text/html; charset=utf-8' if f[-1]=='l' else 'application/javascript',{'Cache-Control':'no-cache'})
@@ -873,7 +1847,8 @@ class H(BaseHTTPRequestHandler):
         u=s.user()
         if u is None:return s.send(403,b'{}')
         n=int(s.headers.get('Content-Length',0))
-        if n>(40000000 if s.path=='/api/restore' and u==OWNER else 3000000):return s.send(413,b'{}')
+        if n>(MAX_BACKUP_BYTES if s.path=='/api/restore' and u==OWNER else 3000000):
+            return s.send(413,json.dumps({'err':'Размер файла превышает допустимый предел.'}).encode())
         try:b=json.loads(s.rfile.read(n))
         except Exception:return s.send(400,b'{}')
         if not isinstance(b,dict):return s.send(400,b'{}')
@@ -898,7 +1873,9 @@ class H(BaseHTTPRequestHandler):
             k=secrets.token_urlsafe(16);IMG[k]=(t+600,png);return s.send(200,json.dumps({'url':'/img/'+k}).encode())
         with L:
             ro,x=role(u)
-            if p in ('/api/payquote','/api/pay','/api/move-payment','/api/cancel-payment','/api/reschedule-request','/api/reschedule','/api/close-deal'):
+            if p in ('/api/payquote','/api/pay','/api/pay-debt','/api/cancel-debt-pay','/api/move-payment','/api/cancel-payment','/api/defer',
+                     '/api/reschedule-request','/api/reschedule','/api/reschedule-manual','/api/close-deal','/api/return-deal',
+                     '/api/calendar','/api/deal-note','/api/bike-preparation','/api/bike-writeoff','/api/payment-report','/api/statement'):
                 try:
                     result=workflow_action(p,b,ro,x);db.commit()
                     return s.send(200,json.dumps(result).encode())
@@ -908,7 +1885,8 @@ class H(BaseHTTPRequestHandler):
                 P=set(x[1].get('perms',[])) if ro=='admin' else None
                 if p in('/api/bill','/api/unk','/api/tochka','/api/mockpay'):
                     try:return s.send(200,json.dumps(owner_act(p,b,ro,x,P)).encode())
-                    except Bad as e:return s.send(400,json.dumps({'err':str(e)}).encode())
+                    except Bad as e:
+                        db.rollback();return s.send(400,json.dumps({'err':str(e)}).encode())
                 who_=ro=='admin' and '@'+str(x[1].get('name',''))[:40] or ''
                 if p in('/api/put','/api/del'):
                     if p=='/api/del' and ro!='owner':return s.send(403,b'{}')
@@ -927,17 +1905,48 @@ class H(BaseHTTPRequestHandler):
                         if old is not None and new.get('_v',0)!=old.get('_v',0):return s.send(409,b'{"err":"conflict"}')
                         if k=='cfg':
                             try:
-                                for field in ('multi_discount','receipt'):
-                                    if field in new:
+                                for field in ('multi_discount','receipt','acq','tax','pen'):
+                                    if field in new and (not old or old.get(field)!=new[field]):
                                         value=float(new[field])
                                         if not math.isfinite(value) or not 0<=value<=100:raise Bad('Проценты должны быть от 0 до 100.')
                                         new[field]=value
-                                if 'dmin' in new:
+                                if 'dmin' in new and (not old or old.get('dmin')!=new['dmin']):
                                     value=whole(new['dmin'],'минимальный процент')
                                     if not 50<=value<=100:raise Bad('Минимальная частичная оплата — от 50 до 100%.')
                                     new['dmin']=value
+                                for field,minimum in (('dd',1),('dbd',0)):
+                                    if field in new and (not old or old.get(field)!=new[field]):
+                                        value=whole(new[field],'число дней')
+                                        if not minimum<=value<=365:raise Bad('Укажите срок в пределах 365 дней.')
+                                        new[field]=value
                             except (Bad,ValueError,TypeError) as e:return s.send(400,json.dumps({'err':str(e)}).encode())
-                        if k=='deal':completion_notice(old,new)
+                        if k=='deal':
+                            try:
+                                if not old:validate_new_deal(new,tod())
+                                if new.get('pen') is not None and (not old or old.get('pen')!=new.get('pen')):
+                                    rate=float(new['pen'])
+                                    if not math.isfinite(rate) or not 0<=rate<=100:raise Bad('Неустойка должна быть от 0 до 100%.')
+                                    new['pen']=rate
+                                opening=not old or old.get('status')!='active'
+                                if new.get('status')=='active':
+                                    if (opening or old.get('bike')!=new.get('bike')) and not bike_available(new.get('bike'),i):
+                                        raise Bad('Выберите свободный велосипед со статусом «Готов к выдаче».')
+                                    if opening or old.get('client')!=new.get('client'):
+                                        client_id=new.get('client');client=row(client_id)
+                                        if not client or client[0]!='client' or client[1].get('archived'):
+                                            raise Bad('Выберите действующую карточку клиента.')
+                                        if any(j!=i and d.get('client')==client_id and d.get('status')=='active' for j,d in docs_of('deal')):
+                                            raise Bad('У клиента уже есть действующий выкуп.')
+                            except (Bad,ValueError,TypeError) as e:return s.send(400,json.dumps({'err':str(e)}).encode())
+                            stamp_receipts(new,old)
+                            if old and old.get('status')=='active':
+                                if new.get('status')=='seized':
+                                    update_preparation(old['bike'],'inspection',tod(),who_.lstrip('@'),returned=True)
+                                    close_pending_schedule(i,tod(),who_.lstrip('@'))
+                                elif new.get('status')=='active' and new.get('bike')!=old.get('bike'):
+                                    date=((new.get('swaps') or [{}])[-1]).get('date') or tod()
+                                    update_preparation(old['bike'],'inspection',date,who_.lstrip('@'),returned=True)
+                            completion_notice(old,new)
                         new['_v']=(old or {}).get('_v',0)+1
                         save(i,k,new)
                     else:db.execute('delete from docs where id=?',(i,));new=None
@@ -985,59 +1994,86 @@ class H(BaseHTTPRequestHandler):
                         say(f"Клиент {c.get('name')} вошёл в приложение.");return s.send(200,b'{}')
                 if len(TRY[u])==3:say(f'Неудачные попытки входа (Telegram ID {u}).')
                 return s.send(403,b'{}')
-            if ro=='client' and p=='/api/defer' and ID.fullmatch(str(b.get('id',''))):
-                d=doc(b['id']);today=dt.datetime.now(MSK).date()
-                if not d or d.get('client')!=x or d.get('status')!='active' or any(q.get('by')=='client' for q in d.get('defer',[])):return s.send(409,b'{}')
-                k=first_unpaid(d)
-                if not k or due(d,k)<today or (dstat(d,str(today)) or {}).get('over'):return s.send(409,b'{}')
-                n2=(doc('cfg') or {}).get('dd',2);d['shift']=d.get('shift',0)+n2;d.setdefault('defer',[]).append({'date':str(today),'days':n2,'by':'client'});d['_v']=d.get('_v',0)+1
-                save(b['id'],'deal',d)
-                db.execute('insert into log values(?,?,?,?,?)',(ts,'defer-client',b['id'],None,None));db.commit()
-                say(f"Клиент {(doc(x) or {}).get('name')} взял отсрочку на {n2} дн.");defer_msg(d);return s.send(200,b'{}')
         return s.send(403,b'{}')
+NOTICE_LOCK=threading.Lock()
 def morning(t):
-    """10:00 messages for date t: the owner's summary and clients' reminders (the day before and on the day of payment).
-    Each message goes out once (ntf keeps what was sent) and only while its switch in Settings is on."""
-    out=[]
-    with L:
-        cf=doc('cfg') or {}
-        ds=[(i,json.loads(d)) for i,d in db.execute("select id,data from docs where kind='deal'").fetchall()]
-        def once(k):
-            if db.execute('select 1 from ntf where k=?',(k,)).fetchone():return False
-            db.execute('insert into ntf values(?)',(k,));return True
-        if cf.get('nown') and once(f'{t}:daily'):
-            c=due_today([d for _,d in ds],t);out.append((OWNER,f'Сегодня платят клиентов: {c}' if c else 'Сегодня платежей нет'))
-        if cf.get('ncli'):
-            for i,d in ds:
-                if d.get('status')!='active':continue
-                x=nxt(d)
-                if not x:continue
-                dd=due(d,x['k']);g=(dd-t).days
-                if g in(0,1) and once(f"{t}:rem:{i}:{x['k']}:{dd}:{g}"):
-                    N=len(sched(d));txt=(f"Напоминание: завтра, {dm(dd)}, платёж {rub(x['amt'])} (период {x['k']} из {N})." if g else f"Сегодня день оплаты: {rub(x['amt'])} (период {x['k']} из {N}).")
-                    for (g2,) in db.execute('select tg from bind where client=?',(d.get('client'),)).fetchall():out.append((g2,txt))
-        db.execute('delete from ntf where k<?',(str(t-dt.timedelta(days=60)),));db.commit()
-    for c,x in out:push(c,x)
-def job():
-    last=None
-    while 1:
-        n=dt.datetime.now(MSK);key=(n.date(),n.hour)
-        if key!=last and n.hour in(3,10):
-            last=key
+    """Queue and retry today's reminders. A Telegram success records the delivery."""
+    if not NOTICE_LOCK.acquire(blocking=False):return
+    try:
+        now=time.time();day=str(t);pending={}
+        with L,db:
+            cf=doc('cfg') or {}
+            ds=docs_of('deal')
+            sent={key for (key,) in db.execute('select k from ntf where k between ? and ?',(day,day+'~'))}
+            key=f'{day}:daily'
+            if cf.get('nown') and key not in sent:
+                count=due_today([d for _,d in ds],t)
+                pending[key]=(OWNER,f'Сегодня платят клиентов: {count}' if count else 'Сегодня платежей нет')
+            if cf.get('ncli'):
+                chats={}
+                for chat,client in db.execute('select tg,client from bind'):chats.setdefault(client,[]).append(chat)
+                for i,d in ds:
+                    if d.get('status')!='active':continue
+                    schedule=sched(d);numbers={x['k']:n for n,x in enumerate(schedule,1)}
+                    for x in unpaid_installments(d,schedule):
+                        deadline=D(payment_deadline(d,x));wait=(deadline-t).days
+                        if wait>1:break
+                        if wait<0:continue
+                        base=f"{day}:rem:{i}:{x['k']}:{deadline}:{wait}"
+                        if base in sent:continue
+                        label=f"платёж {rub(x['amt'])} (период {numbers[x['k']]} из {len(schedule)})."
+                        body=f"Напоминание: завтра, {dm(deadline)}, {label}" if wait else f"Сегодня день оплаты: {label}"
+                        for chat in chats.get(d['client'],[]):
+                            key=f'{base}:{chat}'
+                            if key not in sent:pending[key]=(chat,body)
+            db.execute('delete from notice_queue where day!=?',(day,))
+            obsolete=[(key,) for (key,) in db.execute('select k from notice_queue') if key not in pending]
+            db.executemany('delete from notice_queue where k=?',obsolete)
+            db.executemany('insert into notice_queue values(?,?,?,?,0,?) on conflict(k) do update set body=excluded.body',
+                           [(key,day,chat,body,now) for key,(chat,body) in pending.items()])
+            db.execute("delete from ntf where k<? and substr(k,1,1) between '0' and '9'",(str(t-dt.timedelta(days=60)),))
+            ready=db.execute('select k,chat,body,attempts from notice_queue where next<=? order by next limit 50',(now,)).fetchall()
+        for key,chat,body,attempts in ready:
             try:
-                if n.hour==3:
-                    with L:snap('app')
-                else:morning(n.date())
-            except Exception as e:print(e)
+                delivered=tg('sendMessage',{'chat_id':chat,'text':body}).get('ok') is True
+            except Exception as error:
+                print('reminder',type(error).__name__);delivered=False
+            with L,db:
+                if delivered:
+                    db.execute('insert or ignore into ntf values(?)',(key,))
+                    db.execute('delete from notice_queue where k=?',(key,))
+                else:
+                    retry=time.time()+min(1800,30*2**min(attempts,6))
+                    db.execute('update notice_queue set attempts=?,next=? where k=?',(attempts+1,retry,key))
+    finally:NOTICE_LOCK.release()
+
+def job():
+    last_snapshot=None
+    while 1:
+        n=dt.datetime.now(MSK)
+        if n.hour==3 and n.date()!=last_snapshot:
+            try:
+                with L:snap('app')
+                last_snapshot=n.date()
+            except Exception as e:print('snapshot',e)
+        if n.hour>=10 and not NOTICE_LOCK.locked():
+            threading.Thread(target=morning,args=(n.date(),),daemon=True).start()
         if time.time()-PL_LAST[0]>170:
             PL_LAST[0]=time.time()
-            try:poll()
-            except Exception as e:print('poll',e)
+            threading.Thread(target=poll,daemon=True).start()
         time.sleep(30)
 def migrate():
     """One-time: administrators who could give early payments / deferrals also get the new right «Неустойка»."""
     with L:
-        if db.execute("select 1 from ntf where k='mig:pen'").fetchone():return
+        os.chmod(BK,0o700)
+        legacy=row('tch')
+        if legacy:
+            if not os.path.exists(BANK_SETTINGS):save_bank_settings(legacy[1])
+            db.execute('pragma secure_delete=on')
+            db.execute("delete from docs where id='tch'")
+            db.execute("delete from log where id='tch'")
+        migrate_fee_records()
+        if db.execute("select 1 from ntf where k='mig:pen'").fetchone():db.commit();return
         for i,d in db.execute("select id,data from docs where kind='admin'").fetchall():
             d=json.loads(d)
             if 'early' in d.get('perms',[]) and 'pen' not in d['perms']:d['perms']=[q for q in PERMS if q in d['perms']+['pen']];save(i,'admin',d)
