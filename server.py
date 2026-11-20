@@ -29,7 +29,7 @@ def tariff_key(model,batteries):
     return f'{model}-2-akb' if batteries==2 else model
 
 BIKE_TARIFF_KEYS={tariff_key(model,count) for model in BIKE_MODELS for count in BATTERY_COUNTS}
-WEEKLY_TERMS=(8,12,16,20,22,26)
+WEEKLY_TERMS=(8,12,16,20,26)
 LEGACY_WEEKLY_TERMS={str(weeks) for weeks in range(8,27)}
 WEEKLY_TERM_LIST=', '.join(map(str,WEEKLY_TERMS))
 CLIENT_DEFERRAL_LIMIT=4
