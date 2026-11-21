@@ -852,29 +852,14 @@ function updC(){
     box.innerHTML=`<div class=card><b>Тарифы · ${name}</b>${discount?`<p class=sub>В итоговых ценах учтена скидка ${m(discount)}.</p>`:''}<div class=table-scroll>
         <table class=data-table><thead><tr><th scope=col>Срок</th><th scope=col>В неделю</th><th scope=col>При выдаче</th>
         <th scope=col>Всего</th><th scope=col></th></tr></thead><tbody>${rows}</tbody></table></div>${actions}</div>`+
-        fold('Памятка для клиента',tariffMemo(example).map(line=>`<p class=sub>${esc(line)}</p>`).join(''));
+        fold('Памятка для клиента',tariffMemo().map(line=>`<p class=sub>${esc(line)}</p>`).join(''));
 }
-function tariffMemo(quote){
+function tariffMemo(){
     const rate=S.cfg.multi_discount??1.5,minimum=DM();
-    const lines=[];
-    if(quote){
-        const {weeks,baseTotal,discount,total,down,bal,pay,last}=quote;
-        const term=`${weeks} ${plur(weeks,'неделя','недели','недель')}`;
-        lines.push(discount
-            ? `Выкуп на ${term}. Цена по тарифу — ${m(baseTotal)}, с учётом скидки ${m(discount)} за первоначальный взнос — ${m(total)}.`
-            : `Выкуп на ${term} стоит ${m(total)}.`);
-        if(bal){
-            const same=pay===last,count=weeks-(same?1:2),payments=plur(count,'платёж','платежа','платежей');
-            lines.push(`При выдаче вы платите ${m(amountAtIssue(quote))}. В эту сумму входят первоначальный взнос ${m(down)} и первый платёж по графику ${m(pay)}.`);
-            lines.push(`Дальше — ${count} еженедельных ${payments} по ${m(pay)}${same?'':` и последний платёж ${m(last)}`}.`);
-        }else{
-            lines.push(`Первоначальный взнос ${m(down)} покрывает всю стоимость. Вы оплачиваете её при выдаче.`);
-        }
-    }else{
-        lines.push('Первоначальный взнос входит в стоимость выкупа. При выдаче вы вносите его и первый платёж по графику.');
-    }
     return [
-        ...lines,
+        'При выдаче вы вносите первоначальный взнос и первый платёж по графику. Если первоначальный взнос покрывает всю стоимость, вы оплачиваете её при выдаче.',
+        'Чем больше первоначальный взнос, тем меньше остаток и еженедельный платёж при том же сроке и цене. Если за выбранный взнос предусмотрена скидка, она уменьшает и полную стоимость выкупа.',
+        'Досрочный выкуп. Если условия договора позволяют сэкономить, предложение появится в кабинете после полной оплаты первых четырёх периодов. Цена зависит от даты полного расчёта. Первоначальный взнос и уже внесённые платежи за велосипед засчитываются в эту цену.',
         ...(rate>0?[`Когда вы оплачиваете два или больше ближайших взносов сразу, действует отдельная скидка ${pc(rate)}% от внесённой за них суммы. Она уменьшает остаток, начиная с последнего платежа по графику.`]:[]),
         ...(minimum<100?[`Ближайший взнос по графику можно внести частями. Первый платёж — от ${pc(minimum)}% суммы взноса. Срок доплаты указан в приложении.`]:[]),
         'После полной оплаты приезжайте подписать документы и забрать второй комплект ключей.'
@@ -887,7 +872,7 @@ function tariffTableText(model,down,batteries=1){
         const payments=result.bal?` · ${m(result.pay)} в неделю${result.last!=result.pay?` · последний взнос ${m(result.last)}`:''}`:' · оплата полностью при выдаче';
         return `${term}${payments} · при выдаче ${m(amountAtIssue(result))} · всего ${m(result.total)}`;
     });
-    return [`Вольт Вояж · ${configurationName(model,batteries)}`,...advanceDetails(down,advanceDiscount(down)),'',...lines,'','Памятка',tariffMemo(offers[0]?.result).join('\n\n')].join('\n');
+    return [`Вольт Вояж · ${configurationName(model,batteries)}`,...advanceDetails(down,advanceDiscount(down)),'',...lines,'','Памятка',tariffMemo().join('\n\n')].join('\n');
 }
 function shareTariffTable(){
     const model=v('#tariff-model'),batteries=+v('#tariff-batteries'),down=+v('#d2')||0;
@@ -900,7 +885,7 @@ function sampleScheduleText(model,weeks,result,down,date,batteries=1){
     const schedule=C.sched({type:'w',start:date,n:weeks,pay:result.pay,last:result.last});
     const payments=schedule.length?schedule.map(row=>`${row.k}. ${fmt(row.due)} · ${m(row.amt)}`):
         [`${fmt(date)} · полная оплата при выдаче`];
-    return [...header,'',...payments,'','Памятка',tariffMemo(result).join('\n\n'),'','Даты уточним при оформлении.'].join('\n');
+    return [...header,'',...payments,'','Памятка',tariffMemo().join('\n\n'),'','Даты уточним при оформлении.'].join('\n');
 }
 function shareOffer(weeks){
     const model=v('#tariff-model'),batteries=+v('#tariff-batteries'),down=+v('#d2')||0;
@@ -921,13 +906,13 @@ function tariffImageData(model,down,offer,date,batteries=1){
     if(offer){
         const {weeks,result}=offer,schedule=C.sched({type:'w',start:date,n:weeks,pay:result.pay,last:result.last});
         return {title:`График · ${configurationName(model,batteries)}`,subtitle:`${weeks} нед. · полная стоимость ${m(result.total)}`,
-            details:[...advanceDetails(down,result.discount),`При выдаче ${fmt(date)} — ${m(amountAtIssue(result))}`],memo:tariffMemo(result),
+            details:[...advanceDetails(down,result.discount),`При выдаче ${fmt(date)} — ${m(amountAtIssue(result))}`],memo:tariffMemo(),
             labels:['Взнос','Дата','К оплате'],rows:schedule.length?schedule.map(row=>({cells:[String(row.k),fmt(row.due),m(row.amt)]})):
                 [{cells:['При выдаче',fmt(date),m(result.total)]}]};
     }
     const validOffers=calculatorOffers(model,down,batteries).filter(item=>!item.problem);
     return {title:`Выкуп · ${configurationName(model,batteries)}`,subtitle:'Сроки и еженедельные платежи',details:advanceDetails(down,advanceDiscount(down)),
-        memo:tariffMemo(validOffers[0]?.result),labels:['Срок','В неделю','При выдаче','Всего'],rows:validOffers.map(({weeks,result})=>({
+        memo:tariffMemo(),labels:['Срок','В неделю','При выдаче','Всего'],rows:validOffers.map(({weeks,result})=>({
             cells:[`${weeks} нед.`,result.bal?m(result.pay):'—',m(amountAtIssue(result)),m(result.total)],
             last:result.bal&&result.last!=result.pay?`Последний ${m(result.last)}`:''}))};
 }
@@ -1404,7 +1389,7 @@ function set(){
         <button class="btn sec" onclick="$('#rf').click()">${ic('up','s')}Восстановить</button></div>
         <input id=rf type=file accept=".json,application/json" hidden onchange="restoreFile(this)"></div>`;
     const log=`<div class=grp><button class="row nl" onclick="go('logS')"><span class=gl>${ic('list')}</span><span class=tx><b>Открыть журнал действий</b><span>Кто и что менял</span></span>${ic('right')}</button></div>`;
-    return `<div class=hd><div><small>Версия 16</small><h1>Настройки</h1></div></div>`
+    return `<div class=hd><div><small>Версия 17</small><h1>Настройки</h1></div></div>`
         +tariffs
         +settingSection('payments','Платежи, отсрочка и неустойка',payments)
         +settingSection('fees','Налог и комиссии',fees)
