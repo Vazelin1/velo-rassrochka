@@ -313,7 +313,7 @@ const fold=(title,body,attributes='')=>`<details class="card fold"${attributes?'
 const empty=(i,t)=>`<div class=empty>${ic(i)}<div>${t}</div></div>`;
 function center(i,h,t){$('#app').innerHTML=`<div class=center>${ic(i,'l')}<h1>${esc(h)}</h1><p>${tx2(t)}</p></div>`}
 const seg=(id,L,sel,cls)=>`<div class="seg ${cls||''}" id=${id}>${L.map((x,i)=>`<button type=button class="${(sel==null?i==0:x==sel)?'on':''}" onclick="segSel(this)">${esc(x)}</button>`).join('')}</div>`;
-function segSel(b){b.parentNode.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');hap();const i=b.parentNode.id;if(i=='dp')updDebt()}
+function segSel(b){b.parentNode.querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');hap();const i=b.parentNode.id;if(i=='dp')updDebt();if(i=='issue-method')updD()}
 const segVal=id=>($(id+' .on')||{}).textContent;
 /* the wheel: one segment per payment of the schedule */
 function wheel(st,o={}){const N=st.length,Z=o.size||44,w=o.sw||4,r=(Z-w)/2,c=Z/2,sa=2*Math.PI*r/N,cap=o.round?w:0,gp=N>1?Math.min((o.gap||1.8)+cap,sa-.3):0,g=gp/r*180/Math.PI,
@@ -454,6 +454,13 @@ const tariffTerms=(model,batteries=1)=>{
     const rates=S.cfg.tariffs?.[C.tariffKey(model,batteries)];
     return C.WEEKLY_TERMS.flatMap(weeks=>{const weekly=rates?.[weeks];return weekly>0?[{weeks,weekly}]:[]});
 };
+const advanceDiscount=down=>S.cfg.advanceDiscounts?.[down]??0;
+const advanceOptions=selected=>C.ADVANCES.map(down=>{
+    const discount=advanceDiscount(down),label=m(down)+(discount?` · скидка ${m(discount)}`:'');
+    return `<option value="${down}" ${selected==down?'selected':''}>${label}</option>`;
+}).join('');
+const quoteBuyout=(weekly,weeks,down)=>C.buyoutQuote({weekly,weeks,down,discount:advanceDiscount(down)});
+const forecastBuyout=(quote,options)=>C.buyoutForecast(quote,{tax:TX(),acq:AQ(),receipt:RC(),...options});
 const bikeReady=b=>!b.archived&&!dealOf('bike',b.id)&&(!b.preparation||b.preparation.status=='ready');
 const bikeStatus=b=>b.archived?[b.wo?'Списан':'В архиве','n']:b.preparation?PREP[b.preparation.status]||PREP.ready:['Свободен','n'];
 const findRow=(icon,title,subtitle,page,id,status)=>`<button class=row onclick="go('${page}','${id}')"><span class=gl>${ic(icon)}</span><span class=tx><b>${esc(title)}</b><span>${esc(subtitle)}</span></span>${status?chip(...status):ic('right','s')}</button>`;
@@ -611,9 +618,13 @@ function fDeal(){
         <label class=fld><span>Клиент</span><select id=c onchange=updD()>${clients.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
         <label class=fld><span>Велосипед</span><select id=b onchange="termOpts();updD()">${bikes.map(b=>`<option value="${b.id}">${esc(b.name)}${modelName(b.model)?' · '+configurationName(b.model,b.batteries):''}</option>`).join('')}</select></label>
         <label class=fld><span>Срок</span><select id=n onchange=updD()></select></label>
-        <label class=fld><span>Первоначальный взнос, ₽</span><input id=dn type=number min=0 step=0.01 inputmode=decimal oninput=updD()></label>
+        <label class=fld><span>Первоначальный взнос</span><select id=dn onchange=updD()>${advanceOptions(C.ADVANCES[0])}</select></label>
+        <div class=f2>
+            ${fld('Подарок клиенту','gift-name','','maxlength=160 oninput=updD()')}
+            <label class=fld><span>Стоимость подарка, ₽</span><input id=gift-cost type=number min=0 max="${MAX_BUYOUT_AMOUNT}" step=0.01 inputmode=decimal oninput=updD()></label>
+        </div>
         <div class=f2>${fld('Номер договора','ct')}<label class=fld><span>Дата оформления</span><input id=s type=date max="${C.today()}" value="${C.today()}"></label></div>
-        <label class=fld><span>Способ оплаты при выдаче</span></label>${seg('m',['наличные','СБП','перевод'],null,'in')}
+        <label class=fld><span>Способ оплаты при выдаче</span></label>${seg('issue-method',['наличные','СБП','перевод'],null,'in')}
         <div id=pv class=pv></div><div class=acts><button class="btn blk lg" id=create-buyout onclick=saveDeal()>Создать выкуп</button></div></div>`;
 }
 const chosenBike=()=>S.bikes.find(bike=>bike.id==v('#b'));
@@ -627,45 +638,53 @@ function dealIn(){
     const bike=chosenBike(),weeks=+v('#n'),batteries=bike?.batteries??1;
     const weekly=tariffTerms(bike?.model,batteries).find(term=>term.weeks===weeks)?.weekly;
     if(!bike||!v('#c')||!weekly)return null;
-    return {cost:bike.cost,type:'w',n:weeks,weekly,down:+v('#dn')||0,tax:S.cfg.tax,acq:S.cfg.acq,receipt:S.cfg.receipt,
-        tariff:{model:bike.model,batteries,weeks,weekly}};
+    const down=+v('#dn'),quote=quoteBuyout(weekly,weeks,down),name=v('#gift-name').trim(),amount=+v('#gift-cost');
+    return {cost:bike.cost??0,quote,method:segVal('#issue-method'),gift:name||amount?{name,amount}:null,
+        tariff:{model:bike.model,batteries,weeks,weekly,advanceDiscount:quote.discount}};
 }
-function installmentProblem(result,down){
-    if(down<0||result.bal<0)return 'Первоначальный взнос должен быть от 0 до полной цены.';
+function installmentProblem(result){
+    if(result.bal<0)return 'Первоначальный взнос больше цены выкупа со скидкой.';
     if(result.bal>0&&result.pay<=0)return 'Остаток слишком мал для выбранного срока.';
+    if(result.total>MAX_BUYOUT_AMOUNT)return `Итоговая цена превышает ${m(MAX_BUYOUT_AMOUNT)}.`;
     return '';
 }
-const amountAtIssue=(result,down)=>C.money(C.minor(down)+C.minor(result.pay));
-function res(result,down){
-    return `<div class=mu>Платёж в неделю</div><div class=big>${m(result.pay)}</div>${kv('Полная цена выкупа',m(result.total))}
-        ${kv('К оплате при выдаче',m(amountAtIssue(result,down)))}${down?kv('Из них первоначальный взнос',m(down)):''}${kv('Последний платёж',m(result.last))}
-        ${kv('Плановый налог',m(result.tax))}${result.acq?kv('Эквайринг',m(result.acq)):''}${result.receipt?kv('Формирование чеков',m(result.receipt)):''}
-        ${kv('Плановая прибыль',m(result.profit))}`;
+const amountAtIssue=quote=>quote.down+quote.pay;
+function res({quote,cost,gift,method}){
+    const plan=forecastBuyout(quote,{cost,gift:gift?.amount,issueMethod:method});
+    return `<div class=mu>${quote.bal?'Платёж в неделю':'Полная оплата при выдаче'}</div><div class=big>${m(quote.bal?quote.pay:quote.total)}</div>
+        ${quote.discount?kv('Скидка за первоначальный взнос','−'+m(quote.discount)):''}${kv('Полная цена выкупа',m(quote.total))}
+        ${kv('К оплате при выдаче',m(amountAtIssue(quote)))}${kv('Из них первоначальный взнос',m(quote.down))}${quote.bal?kv('Последний платёж',m(quote.last)):''}
+        ${gift?kv('Стоимость подарка',m(gift.amount)):''}${kv('Расчётный налог',m(plan.tax))}
+        ${plan.acq?kv('Эквайринг',m(plan.acq)):''}${plan.receipt?kv('Формирование чеков по СБП',m(plan.receipt)):''}
+        ${kv('Плановая прибыль',m(plan.profit))}
+        ${quote.bal?'<p class=sub>Остальные платежи в расчёте проходят по СБП.</p>':''}`;
 }
 function updD(){
-    const bike=chosenBike(),input=dealIn(),result=input&&C.calc(input),preview=$('#pv');
+    const bike=chosenBike(),input=dealIn(),giftCost=$('#gift-cost'),preview=$('#pv');
     const issue=!bike||!v('#c')?'Нужны свободные клиент и велосипед.':!modelName(bike.model)?'Укажите модель в карточке велосипеда.':
         !input?'Задайте платёж для этой комплектации в разделе «Тарифы выкупа».':
-        !$('#dn').checkValidity()?'Введите сумму с точностью до копейки.':installmentProblem(result,input.down);
+        giftCost.validity?.badInput||!giftCost.checkValidity()?'Проверьте стоимость подарка.':
+        input.gift&&giftCost.value===''?'Укажите стоимость подарка.':installmentProblem(input.quote);
     $('#create-buyout').disabled=!!issue;
-    preview.innerHTML=issue?`<p class=mu>${esc(issue)}</p>${bike&&!modelName(bike.model)&&can('bikes')?`<button class="btn sec blk" onclick="go('fBike','${bike.id}')">Открыть карточку велосипеда</button>`:''}`:res(result,input.down);
+    preview.innerHTML=issue?`<p class=mu>${esc(issue)}</p>${bike&&!modelName(bike.model)&&can('bikes')?`<button class="btn sec blk" onclick="go('fBike','${bike.id}')">Открыть карточку велосипеда</button>`:''}`:res(input);
 }
 async function saveDeal(){
     const input=dealIn(),date=v('#s'),button=$('#create-buyout');
     if(!input||button.disabled)return;
     if(!date||date>C.today())return uiAlert('Укажите дату фактической выдачи. Дата должна быть сегодня или раньше.');
-    const result=C.calc(input),method=segVal('#m');
+    const {quote,method,gift,tariff}=input;
     button.disabled=true;
     try{
-        await put('deal',{client:v('#c'),bike:v('#b'),type:'w',n:input.n,start:date,down:input.down,down_method:method,tariff:input.tariff,cost:input.cost,
-            pay:result.pay,last:result.last,total:result.total,tax:result.tax,acq:result.acq,receipt:result.receipt,
-            contract:v('#ct'),pen:S.cfg.pen??0.9,early:[],status:'active',paid:result.bal?{1:{date,amt:result.pay,pen:0,method}}:{}});
+        await put('deal',{client:v('#c'),bike:v('#b'),type:'w',n:quote.weeks,start:date,down:quote.down,down_method:method,tariff,
+            pay:quote.pay,last:quote.last,total:quote.total,...(gift?{gift}:{}),
+            contract:v('#ct'),pen:S.cfg.pen??0.9,early:[],status:'active',paid:quote.bal?{1:{date,amt:quote.pay,pen:0,method}}:{}});
         hap('success');toast('Выкуп оформлен');nav('home');
     }finally{button.disabled=false}
 }
 
 /* ---------- deal screen */
 const EXP=b=>((b&&b.exp)||[]).reduce((a,e)=>a+e.amt,0),TX=()=>S.cfg.tax==null?7:S.cfg.tax,AQ=()=>S.cfg.acq||0,RC=()=>S.cfg.receipt||0,pc=x=>(+x).toLocaleString('ru'),exc=d=>(d.extras||[]).reduce((a,e)=>a+e.cost,0);
+const giftCost=d=>d.gift?.amount??0;
 function deal(id){const d=S.deals.find(x=>x.id==id),c=S.clients.find(x=>x.id==d.client)||{},b=S.bikes.find(x=>x.id==d.bike)||{},I=info(d),on=d.status=='active',k=I.sc.length-I.un.length,t=C.today();
 const stt=on?(I.od.length||(I.g&&I.g.over)?['просрочка','er']:I.g?['долг','wa']:I.done?['выплачен','ok']:['в выкупе','bl']):({archived:['выкуплен','ok'],seized:['изъят','er'],lost:['списан','n']}[d.status]||['закрыт','n']);
 const r=x=>{const p=d.paid[x.k],limit=C.deadline(d,x),o=!p&&limit<t;return `<div class="per ${p?'ok':o?'er':''}"><span class=dot>${p?ic('check','s'):periodNumber(d,x.k)}</span><span class=tx><b>${per(d,x)}</b><span>${p?`${p.part?`внесено ${m(p.amt)} из ${m(x.amt)}`:'оплачен'} ${fmt(p.date)}, ${esc(p.method)}${p.pen?`, неустойка ${m(p.pen)}`:''}`:limit>x.due?`Отсрочка до ${fmt(limit)}`:''}</span>${p&&on&&can('pay')?`<span><button class=un onclick="unpay('${d.id}',${x.k})">Отменить оплату</button> <button class=un onclick="movePaid('${d.id}',${x.k})">Перенести период</button></span>`:''}</span><b>${m(p?p.amt:x.amt)}</b></div>`};
@@ -680,6 +699,7 @@ ${c.erased?'':`<div class=acts><a class="btn sec" href="tel:${esc(c.phone)}">${i
 ${d.private_note?`<div class=card><b>Закреплённая заметка</b><p class=block-copy>${esc(d.private_note.text)}</p><div class="sm mu">${esc(d.private_note.by)} · ${fmt(d.private_note.date)}</div></div>`:''}
 <div class=card><div class=pg>${wheelH}<div class=nx><div style="margin-bottom:8px">${chip(stt[0],stt[1])}</div>${on&&I.x?(I.od.length?`<button class=owb onclick="oweSheet('${d.id}')"><div class=mu>К оплате сейчас</div><div class=mid>${m(I.owe)}</div><div class=mu>${oweSub(I)}${ic('right','s')}</div></button>`:`<div class=mu>Следующий платёж</div><div class=mid>${m(I.x.amt)}</div><div class=mu>до ${fmt(C.deadline(d,I.x))}</div>`):on&&g?`<div class=mu>Остался долг</div><div class=mid>${m(g.total)}</div><div class=mu>${g.over?'срок прошёл':`до ${fmt(g.due)}`}</div>`:`<div class=mid>${on?'Ждёт подписания документов':'Выкуп закрыт'}</div>${d.closed?`<div class=mu>${fmt(d.closed)}</div>`:''}`}</div></div></div>
 ${I.od.length&&on?`<div class="note t-er">${ic('alert')}<div><b>Просрочка.</b> Неустойка сейчас: ${m(I.pen)}</div></div>`:''}${npn}${dcard}${dealRequests(d)}${dealPaymentReports(d.id)}${on?openBills(d.id).map(b=>billCard(d,b)).join(''):''}
+${canFin()?I.done&&(on||d.status=='archived')?dealTotalsCard(d):d.gift?`<div class=card>${kv(giftLabel(d),m(giftCost(d)))}</div>`:'':''}
 <h2 class=sec>${allSch?'Весь график':'Ближайшие платежи'}</h2><div class=grp>${(allSch?I.sc:I.un.slice(0,3)).map(r).join('')||`<div class=empty>Все периоды оплачены</div>`}</div>
 <div class=acts><button class="btn sec blk" onclick="allSch=!allSch;render()">${allSch?'Скрыть график':'Показать весь график'}</button></div>${dps}
 <p class=sub>Клиент добавлен: ${c.created?fmt(c.created.slice(0,10)):'—'}${(d.swaps||[]).length?`<br>Замен велосипеда: ${d.swaps.length}, последняя ${fmt(d.swaps[d.swaps.length-1].date)}`:''}</p>`}
@@ -780,7 +800,7 @@ async function fin(id,st){
     }catch(error){uiAlert(error.message||error)}
 }
 /* ---------- calculator */
-let calculatorModel='',calculatorBatteries=1,calculatorDown='';
+let calculatorModel='',calculatorBatteries=1,calculatorDown=C.ADVANCES[0];
 function calcS(){
     if(!calculatorModel){
         const configuration=configurations.find(({model,batteries})=>tariffTerms(model,batteries).length)||configurations[0];
@@ -789,20 +809,22 @@ function calcS(){
     return `${backBtn()}<div class=hd><h1>Расчёт для клиента</h1></div><div class=form>
         <div class=f2><label class=fld><span>Модель</span><select id=tariff-model onchange="calculatorModel=this.value;render(true)">${modelOptions(calculatorModel)}</select></label>
         <label class=fld><span>Аккумуляторы</span><select id=tariff-batteries onchange="calculatorBatteries=+this.value;render(true)">${batteryOptions(calculatorBatteries)}</select></label></div>
-        <label class=fld><span>Первоначальный взнос, ₽</span>
-            <input id=d2 type=number min=0 step=0.01 inputmode=decimal value="${esc(calculatorDown)}" oninput=updC()></label>
-        <p class=sub>Первоначальный взнос можно добавить по договорённости. Он входит в цену выкупа и уменьшает платежи по графику.</p>
+        <label class=fld><span>Первоначальный взнос</span>
+            <select id=d2 onchange=updC()>${advanceOptions(calculatorDown)}</select></label>
         </div><div id=tb></div>`;
 }
 const calculatorOffers=(model,down,batteries=1)=>tariffTerms(model,batteries).map(({weeks,weekly})=>{
-    const result=C.calc({type:'w',n:weeks,weekly,down});
-    return {weeks,result,problem:installmentProblem(result,down)};
+    const result=quoteBuyout(weekly,weeks,down);
+    return {weeks,result,problem:installmentProblem(result)};
 });
+const advanceDetails=(down,discount)=>[
+    `Первоначальный взнос — ${m(down)}`,
+    ...(discount?[`Скидка на полную стоимость — ${m(discount)}`]:[])
+];
 function updC(){
-    const model=v('#tariff-model'),batteries=+v('#tariff-batteries'),field=$('#d2'),down=+field.value||0;
+    const model=v('#tariff-model'),batteries=+v('#tariff-batteries'),down=+v('#d2');
     const box=$('#tb'),name=configurationName(model,batteries),offers=calculatorOffers(model,down,batteries);
-    calculatorDown=field.value;
-    if(!field.checkValidity()){box.innerHTML='<div class=card>Введите первоначальный взнос с точностью до копейки.</div>';return}
+    calculatorDown=down;
     if(!offers.length){
         box.innerHTML=`<div class=card>Для комплектации «${name}» пока нет тарифов.</div>`;
         return;
@@ -810,24 +832,25 @@ function updC(){
     const rows=offers.map(({weeks,result,problem})=>{
         const weekly=problem||!result.bal?'—':m(result.pay)+(result.last==result.pay?'':`<br><small class=mu>Последний ${m(result.last)}</small>`);
         return `<tr><th scope=row>${weeks} нед.</th><td>${weekly}</td>
-            ${down?`<td>${problem?'—':m(amountAtIssue(result,down))}</td>`:''}
-            <td>${m(result.total)}</td><td>${problem?'<small>Проверьте взнос</small>':`<button class="btn sec sm" onclick="shareOffer(${weeks})">График</button>`}</td></tr>`;
+            <td>${problem?'—':m(amountAtIssue(result))}</td>
+            <td>${problem?'—':m(result.total)}</td><td>${problem?`<small>${esc(problem)}</small>`:`<button class="btn sec sm" onclick="shareOffer(${weeks})">График</button>`}</td></tr>`;
     }).join('');
     const actions=offers.some(offer=>!offer.problem)?`<div class=acts>
         <button class="btn blk" onclick="saveCalculatorImage(this)">${ic('down','s')}Скачать картинку</button>
         <button class="btn sec blk" onclick="shareTariffTable()">Скопировать тарифы</button></div>`:'';
-    box.innerHTML=`<div class=card><b>Тарифы · ${name}</b><div class=table-scroll>
-        <table class=data-table><thead><tr><th scope=col>Срок</th><th scope=col>В неделю</th>${down?'<th scope=col>При выдаче</th>':''}
+    const discount=advanceDiscount(down);
+    box.innerHTML=`<div class=card><b>Тарифы · ${name}</b>${discount?`<p class=sub>В итоговых ценах учтена скидка ${m(discount)}.</p>`:''}<div class=table-scroll>
+        <table class=data-table><thead><tr><th scope=col>Срок</th><th scope=col>В неделю</th><th scope=col>При выдаче</th>
         <th scope=col>Всего</th><th scope=col></th></tr></thead><tbody>${rows}</tbody></table></div>${actions}</div>`+
         fold('Памятка для клиента',tariffMemo().map(line=>`<p class=sub>${esc(line)}</p>`).join(''));
 }
 function tariffMemo(){
     const discount=S.cfg.multi_discount??1.5,minimum=DM();
     return [
-        'Если вам удобно оплатить часть стоимости сразу, заранее согласуем первоначальный взнос. Он засчитывается в полную стоимость выкупа. Оставшуюся сумму делим на выбранное число недель. Чем больше взнос, тем меньше еженедельный платёж.',
-        'В день выдачи оплачиваются первоначальный взнос и первый платёж по графику. Даты остальных платежей указаны в графике. При полной оплате весь расчёт проходит в день выдачи.',
-        'Допустим, выкуп стоит 160 000 ₽, срок — 20 недель. Если вы внесёте 40 000 ₽, оставшиеся 120 000 ₽ распределятся на 20 платежей по 6 000 ₽. При выдаче понадобится 46 000 ₽. После выдачи останется 19 платежей по 6 000 ₽.',
-        ...(discount>0?[`При оплате двух и более ближайших взносов одним платежом действует скидка ${pc(discount)}% от внесённой суммы за эти взносы. Скидка уменьшает сумму к оплате с конца графика.`]:[]),
+        'Выберите первоначальный взнос от 10 000 до 50 000 ₽. Если для него действует скидка, она уменьшает полную цену выкупа. Взнос засчитывается в эту цену, а остаток делится на выбранное число недель. Все суммы в графике указаны в целых рублях. Разница от округления включена в последний платёж.',
+        'При выдаче вносите первоначальный взнос и первый платёж по графику. Дальше платите по датам из графика. Если взнос покрывает всю цену, расчёт полностью проходит при выдаче.',
+        'Например, при цене 160 000 ₽ и скидке 5 000 ₽ вы заплатите всего 155 000 ₽. С первоначальным взносом 40 000 ₽ и сроком 20 недель при выдаче понадобится 45 750 ₽. Дальше останется 19 платежей по 5 750 ₽.',
+        ...(discount>0?[`При оплате двух и более ближайших взносов одним платежом действует скидка ${pc(discount)}% от внесённой за них суммы. Взносы закрываются по порядку, а скидка уменьшает сумму к оплате с конца графика.`]:[]),
         ...(minimum<100?[`Ближайший взнос можно оплатить частично. Минимальная сумма — ${pc(minimum)}% взноса. Срок доплаты будет указан в приложении.`]:[]),
         'После полной оплаты приезжайте подписать документы и забрать второй комплект ключей.'
     ];
@@ -837,9 +860,9 @@ function tariffTableText(model,down,batteries=1){
     const lines=offers.map(({weeks,result})=>{
         const term=`${weeks} ${plur(weeks,'неделя','недели','недель')}`;
         const payments=result.bal?` · ${m(result.pay)} в неделю${result.last!=result.pay?` · последний взнос ${m(result.last)}`:''}`:' · оплата полностью при выдаче';
-        return `${term}${payments}${down?` · при выдаче ${m(amountAtIssue(result,down))}`:''} · всего ${m(result.total)}`;
+        return `${term}${payments} · при выдаче ${m(amountAtIssue(result))} · всего ${m(result.total)}`;
     });
-    return [`Вольт Вояж · ${configurationName(model,batteries)}`,down?`Первоначальный взнос — ${m(down)}`:'Расчёт без первоначального взноса','',...lines,'','Памятка',...tariffMemo()].join('\n');
+    return [`Вольт Вояж · ${configurationName(model,batteries)}`,...advanceDetails(down,advanceDiscount(down)),'',...lines,'','Памятка',...tariffMemo()].join('\n');
 }
 function shareTariffTable(){
     const model=v('#tariff-model'),batteries=+v('#tariff-batteries'),down=+v('#d2')||0;
@@ -848,7 +871,7 @@ function shareTariffTable(){
 function sampleScheduleText(model,weeks,result,down,date,batteries=1){
     const header=[`Вольт Вояж · ${configurationName(model,batteries)}`,
         `${weeks} ${plur(weeks,'неделя','недели','недель')} · цена ${m(result.total)}`,
-        ...(down?[`Первоначальный взнос — ${m(down)}`]:[]),`К оплате при выдаче — ${m(amountAtIssue(result,down))}`];
+        ...advanceDetails(down,result.discount),`К оплате при выдаче — ${m(amountAtIssue(result))}`];
     const schedule=C.sched({type:'w',start:date,n:weeks,pay:result.pay,last:result.last});
     const payments=schedule.length?schedule.map(row=>`${row.k}. ${fmt(row.due)} · ${m(row.amt)}`):
         [`${fmt(date)} · полная оплата при выдаче`];
@@ -867,22 +890,20 @@ function shareOffer(weeks){
         <button class="btn sec blk" data-schedule-image>${ic('down','s')}Скачать картинку</button>`);
 }
 function saveCalculatorImage(button){
-    if(!$('#d2').checkValidity())return;
-    return downloadTariffImage(button,v('#tariff-model'),+v('#d2')||0,null,null,+v('#tariff-batteries'));
+    return downloadTariffImage(button,v('#tariff-model'),+v('#d2'),null,null,+v('#tariff-batteries'));
 }
 function tariffImageData(model,down,offer,date,batteries=1){
-    const downText=down?`Первоначальный взнос — ${m(down)}`:'Пример без первоначального взноса';
     if(offer){
         const {weeks,result}=offer,schedule=C.sched({type:'w',start:date,n:weeks,pay:result.pay,last:result.last});
         return {title:`График · ${configurationName(model,batteries)}`,subtitle:`${weeks} нед. · полная стоимость ${m(result.total)}`,
-            details:[downText,`При выдаче ${fmt(date)} — ${m(amountAtIssue(result,down))}`],
+            details:[...advanceDetails(down,result.discount),`При выдаче ${fmt(date)} — ${m(amountAtIssue(result))}`],
             labels:['Взнос','Дата','К оплате'],rows:schedule.length?schedule.map(row=>({cells:[String(row.k),fmt(row.due),m(row.amt)]})):
                 [{cells:['При выдаче',fmt(date),m(result.total)]}]};
     }
     const validOffers=calculatorOffers(model,down,batteries).filter(item=>!item.problem);
-    return {title:`Выкуп · ${configurationName(model,batteries)}`,subtitle:'Сроки и еженедельные платежи',details:[downText],
-        labels:['Срок','В неделю',...(down?['При выдаче']:[]),'Всего'],rows:validOffers.map(({weeks,result})=>({
-            cells:[`${weeks} нед.`,result.bal?m(result.pay):'—',...(down?[m(amountAtIssue(result,down))]:[]),m(result.total)],
+    return {title:`Выкуп · ${configurationName(model,batteries)}`,subtitle:'Сроки и еженедельные платежи',details:advanceDetails(down,advanceDiscount(down)),
+        labels:['Срок','В неделю','При выдаче','Всего'],rows:validOffers.map(({weeks,result})=>({
+            cells:[`${weeks} нед.`,result.bal?m(result.pay):'—',m(amountAtIssue(result)),m(result.total)],
             last:result.bal&&result.last!=result.pay?`Последний ${m(result.last)}`:''}))};
 }
 function renderTariffPng(data,memo){
@@ -985,46 +1006,69 @@ const curP=()=>repP||'M'+C.today().slice(0,7);
 function rng(p){if(p=='all')return['0000-01-01','9999-12-31'];if(p[0]=='Y'){const y=p.slice(1);return[`${y}-01-01`,`${y}-12-31`]}
 const y=+p.slice(1,5),mo=+p.slice(6,8);return[`${y}-${z2(mo)}-01`,`${y}-${z2(mo)}-${ldm(y,mo)}`]}
 const pLab=p=>p=='all'?'Всё время':p[0]=='Y'?`${p.slice(1)} год`:`${MF[+p.slice(6,8)-1]} ${p.slice(1,5)}`;
-function events(){const r=[];S.deals.forEach(d=>{const p1=(d.paid||{})[1]||{};
+function events(deals=S.deals){const r=[];deals.forEach(d=>{const p1=(d.paid||{})[1]||{};
 if(d.down)r.push({date:d.start,amt:d.down,pen:0,method:d.down_method||p1.method||'наличные',fees:d.down_fees,source:d.down_source,t:'down',d});
 Object.values(d.paid||{}).forEach(p=>r.push({date:p.date,amt:p.amt,pen:p.pen||0,method:p.method||'наличные',fees:p.fees,source:p.source||p.qr||p.group,t:'pay',d}));
 (d.dpays||[]).forEach(z=>r.push({date:z.date,amt:z.amt,pen:z.pen||0,method:z.method||'наличные',fees:z.fees,source:z.source||z.qr,t:'pay',d}));
 (d.early||[]).forEach(e=>r.push({date:e.date,amt:e.paid??e.amt,pen:0,method:e.method||'наличные',fees:e.fees,source:e.source,t:'early',d}));
 if(d.refund)r.push({date:d.closed||d.start,amt:-d.refund,pen:0,method:'',t:'ref',d})});return r}
-const rates=e=>e.fees||(e.method=='СБП'?{acq:AQ(),receipt:RC(),estimated:true}:{acq:0,receipt:0});
+const rates=e=>e.method=='СБП'?(e.fees||{acq:AQ(),receipt:RC(),estimated:true}):{acq:0,receipt:0};
 const feeMoney=value=>cents(C.minor(value));
-function transactions(){
+function transactions(items=events()){
     const grouped=new Map();
-    events().forEach((e,index)=>{
+    items.forEach((e,index)=>{
         const key=JSON.stringify([e.d.id,e.date,e.method,e.source??index]);
         const record=grouped.get(key)||{date:e.date,deal:e.d,method:e.method,cash:0,rates:rates(e),estimated:false};
         record.cash+=C.minor(e.amt)+C.minor(e.pen);
         record.estimated ||= !!rates(e).estimated;
         grouped.set(key,record);
     });
-    return [...grouped.values()].map(e=>({...e,amount:C.money(e.cash),acq:C.money(Math.round(e.cash*(e.rates.acq||0)/100)),
-        receipt:C.money(Math.round(e.cash*(e.rates.receipt||0)/100)),tax:C.money(Math.sign(e.cash)*Math.round(Math.abs(e.cash)*TX()/100))}));
+    return [...grouped.values()].map(e=>{
+        const fees=C.receiptCharges(e.cash,{...e.rates,tax:TX()});
+        return {...e,amount:C.money(e.cash),acq:C.money(fees.acq),receipt:C.money(fees.receipt),tax:C.money(fees.tax)};
+    });
 }
-function sumR(a,b){
-    const R={pay:0,early:0,down:0,pen:0,ref:0,by:{},exp:0,lost:0,lostN:0,acq:0,receipt:0,tax:0};
-    for(const e of events()){
-        if(e.date<a||e.date>b)continue;
+function receiptTotals(items){
+    const R={pay:0,early:0,down:0,pen:0,ref:0,by:{},acq:0,receipt:0,tax:0};
+    for(const e of items){
         if(e.t=='ref'){R.ref-=C.minor(e.amt);continue}
         R[e.t]+=C.minor(e.amt);R.pen+=C.minor(e.pen);
         R.by[e.method]=(R.by[e.method]||0)+C.minor(e.amt)+C.minor(e.pen);
     }
-    for(const e of transactions()){
-        if(e.date<a||e.date>b)continue;
+    for(const e of transactions(items)){
         for(const kind of ['acq','receipt','tax'])R[kind]+=C.minor(e[kind]);
     }
-    for(const bike of S.bikes){
-        for(const x of bike.exp||[])if(x.date>=a&&x.date<=b)R.exp+=C.minor(x.amt);
-        if(bike.wo&&bike.wo.date>=a&&bike.wo.date<=b){R.lost+=C.minor(bike.wo.loss||0);R.lostN++}
-    }
     R.gross=R.pay+R.early+R.down+R.pen;R.net=R.gross-R.ref;
-    for(const key of Object.keys(R))if(key!='by'&&key!='lostN')R[key]=C.money(R[key]);
+    for(const key of Object.keys(R))if(key!='by')R[key]=C.money(R[key]);
     for(const key of Object.keys(R.by))R.by[key]=C.money(R.by[key]);
     return R;
+}
+function sumR(a,b){
+    const R=receiptTotals(events().filter(e=>e.date>=a&&e.date<=b));
+    let repair=0,lost=0,lostN=0,gifts=0;
+    for(const bike of S.bikes){
+        for(const x of bike.exp||[])if(x.date>=a&&x.date<=b)repair+=C.minor(x.amt);
+        if(bike.wo&&bike.wo.date>=a&&bike.wo.date<=b){lost+=C.minor(bike.wo.loss||0);lostN++}
+    }
+    for(const d of S.deals)if(d.start>=a&&d.start<=b)gifts+=C.minor(giftCost(d));
+    return {...R,exp:C.money(repair),lost:C.money(lost),lostN,gifts:C.money(gifts)};
+}
+const giftLabel=d=>d.gift?.name?`Подарок · ${esc(d.gift.name)}`:'Подарок клиенту';
+function dealTotalsCard(d){
+    const R=receiptTotals(events([d])),cost=d.cost??0,extras=exc(d),gift=giftCost(d);
+    const net=C.money(C.minor(R.net)-C.minor(R.tax)-C.minor(R.acq)-C.minor(R.receipt));
+    const profit=C.money(C.minor(net)-C.minor(cost)-C.minor(extras)-C.minor(gift));
+    return fold('Итоги выкупа',`<div class=mu>Чистая прибыль по выкупу</div><div class=mid>${m(profit)}</div>
+        ${kv('Поступления от клиента',m(R.gross))}
+        ${Object.entries(R.by).map(([method,amount])=>kv(esc(method),m(amount))).join('')}
+        ${R.pen?kv('В том числе неустойки',m(R.pen)):''}${R.ref?kv('Возврат','−'+m(R.ref)):''}
+        ${d.tariff?.advanceDiscount?kv('Учтённая скидка за взнос',m(d.tariff.advanceDiscount)):''}
+        ${kv('Расчётный налог',m(R.tax))}${kv('Эквайринг по СБП',feeMoney(R.acq))}
+        ${kv('Формирование чеков по СБП',feeMoney(R.receipt))}
+        ${kv('Выручка после комиссий и налога',m(net))}
+        ${kv('Закупка велосипеда',m(cost))}${extras?kv('Дополнительное оборудование',m(extras)):''}
+        ${d.gift?kv(giftLabel(d),m(gift)):''}
+        ${kv('Расходы всего',m(C.money(C.minor(R.net)-C.minor(profit))))}`, 'open');
 }
 const bars=L=>{const mx=Math.max(1,...L.map(i=>i[1]));return `<div class=bars>${L.map(([a,b])=>`<div class=br><span>${a}</span><i><u style="width:${b>0?Math.max(3,b/mx*100):0}%"></u></i><b>${m(b)}</b></div>`).join('')}</div>`};
 function rep(){return `<div class=hd><h1>Отчёты</h1></div>${seg('rt',['Отчёты','Аналитика'],repTab=='rep'?'Отчёты':'Аналитика')}`+(repTab=='rep'?repR():repA())}
@@ -1033,7 +1077,7 @@ function togPer(){repOpen=!repOpen;const h=$('.rpd');if(!h)return;h.classList.to
 function setPer(p){repP=p;repOpen=false;hap();render()}
 function firstDate(){let f=C.today();S.deals.forEach(d=>{if(d.start&&d.start<f)f=d.start;Object.values(d.paid||{}).forEach(p=>{if(p.date&&p.date<f)f=p.date})});S.bikes.forEach(k=>{const c=k.created&&k.created.slice(0,10);if(c&&c<f)f=c;(k.exp||[]).forEach(x=>{if(x.date<f)f=x.date})});return f}
 /* Each line of a bike's ledger is in kopecks. */
-const COST_TYPES=new Set(['purchase','extra','repair']);
+const COST_TYPES=new Set(['purchase','extra','repair','gift']);
 function ledger(){
     const today=C.today(),L={},first={},add=(id,date,amount,kind)=>{(L[id]??=[]).push([date,amount,kind])};
     S.deals.forEach(d=>useSegs(d).forEach(segment=>{if(!first[segment.bike]||segment.from<first[segment.bike])first[segment.bike]=segment.from}));
@@ -1046,7 +1090,13 @@ function ledger(){
         add(b.id,[b.created?.slice(0,10),first[b.id]].filter(Boolean).sort()[0]||today,-C.minor(b.cost||0),'purchase');
         for(const e of b.exp||[])add(b.id,e.date,-C.minor(e.amt),'repair');
     }
-    for(const d of S.deals)if(exc(d))add(useSegs(d)[0].bike,d.start,-C.minor(exc(d)),'extra');
+    for(const d of S.deals){
+        const extra=exc(d),gift=giftCost(d);
+        if(!extra&&!gift)continue;
+        const {bike}=useSegs(d)[0];
+        if(extra)add(bike,d.start,-C.minor(extra),'extra');
+        if(gift)add(bike,d.start,-C.minor(gift),'gift');
+    }
     for(const lines of Object.values(L))lines.sort((a,b)=>a[0].localeCompare(b[0])||(a[2]=='receipt')-(b[2]=='receipt'));
     return L;
 }
@@ -1084,24 +1134,24 @@ function feeHistory(a,b){
     return fold(`Комиссии по платежам${operations.length?' · '+operations.length:''}`,operations.length?`<div class=table-scroll><table class=data-table><thead><tr><th>Платёж</th><th>Сумма</th><th>Банк</th><th>Чек</th></tr></thead><tbody>${operations.map(e=>`<tr><th><button class=un onclick="go('deal','${e.deal.id}')">${fmt(e.date)}</button><br><small>${esc(nm(e.deal.client))}${e.estimated?' · оценка':''}</small></th><td>${m(e.amount)}</td><td>${feeMoney(e.acq)}</td><td>${feeMoney(e.receipt)}</td></tr>`).join('')}</tbody></table></div>`:empty('receipt','Поступлений по СБП за период нет'));
 }
 function repR(){const p=curP(),[a,b]=rng(p),R=sumR(a,b),all=sumR(...rng('all')),A=act().map(d=>({d,I:info(d)})).filter(x=>x.I.od.length),L=ledger(),pf=profFn(L),first=firstDate(),PR=pf(a,b),back=investmentRecovered(L,a,b);
-const inv=S.bikes.reduce((s,k)=>s+k.cost,0)+S.deals.reduce((s,d)=>s+exc(d),0)+S.bikes.reduce((s,k)=>s+EXP(k),0),DL=act().map(d=>({d,g:info(d).g})).filter(x=>x.g);
+const inv=S.bikes.reduce((s,k)=>s+(k.cost||0)+EXP(k),0)+S.deals.reduce((s,d)=>s+exc(d),0)+all.gifts,DL=act().map(d=>({d,g:info(d).g})).filter(x=>x.g);
 const debt=A.reduce((s,x)=>s+x.I.od.reduce((q,y)=>q+y.amt,0),0),pen=A.reduce((s,x)=>s+x.I.pen,0),lostAll=S.bikes.reduce((s,k)=>s+((k.wo&&k.wo.loss)||0),0),wl=S.bikes.filter(k=>k.wo&&k.wo.date>=a&&k.wo.date<=b);
 return perBox(p,pf,first)+
 `<div class="card tint"><div class=mu>Чистая прибыль, ${p=='all'?'всё время':pLab(p).toLowerCase()}</div><div class=big${PR<0?' style="color:var(--ert)"':''}>${m(PR)}</div>${kv('Получено',m(R.net))}${kv(`Налог ${pc(TX())}%`,'−'+m(R.tax))}${kv('Эквайринг','−'+feeMoney(R.acq))}${kv('Чеки по СБП','−'+feeMoney(R.receipt))}${kv('Из поступлений пошло на окупаемость',m(back))}</div>
-<p class=sub>Сначала деньги возвращают вложения в велосипед: закупку, допы и обслуживание. Всё, что получено сверх этого, и есть чистая прибыль.${lostAll?' Убытки от списанных велосипедов в неё не входят, они показаны ниже.':''}</p>
+<p class=sub>Поступления покрывают закупку, оборудование, обслуживание и подарки клиентам. Чистая прибыль появляется после окупаемости.${lostAll?' Убытки по списаниям показаны ниже.':''}</p>
 ${profList(p,pf,first)}
 <div class=card><div class=mu>Получено за период</div><div class=mid>${m(R.net)}</div>${kv('Платежи по графику',m(R.pay))}${kv('Первоначальные взносы',m(R.down))}${kv('Досрочные платежи',m(R.early))}${kv('Неустойки',m(R.pen))}${R.ref?kv('Возвраты клиентам','−'+m(R.ref)):''}</div>
 <div class=card><b>По способам оплаты</b>${Object.keys(R.by).length?bars(Object.keys(R.by).map(k=>[esc(k),R.by[k]])):'<p class=mu style="margin:8px 0 0">Платежей нет</p>'}</div>
-<div class=card><b>Налог, эквайринг и расходы</b>${kv(`Налог ${pc(TX())}% (отложить)`,m(R.tax))}${kv('Эквайринг по СБП',feeMoney(R.acq))}${kv('Формирование чеков по СБП',feeMoney(R.receipt))}${kv('Расходы на обслуживание',m(R.exp))}${R.lostN?kv(`Убыток от списаний (${R.lostN})`,m(R.lost)):''}${kv('Остаётся без учёта закупки',m(R.net-R.tax-R.acq-R.receipt-R.exp))}</div>${feeHistory(a,b)}
+<div class=card><b>Налог, эквайринг и расходы</b>${kv(`Налог ${pc(TX())}% (отложить)`,m(R.tax))}${kv('Эквайринг по СБП',feeMoney(R.acq))}${kv('Формирование чеков по СБП',feeMoney(R.receipt))}${kv('Расходы на обслуживание',m(R.exp))}${kv('Подарки клиентам',m(R.gifts))}${R.lostN?kv(`Убыток от списаний (${R.lostN})`,m(R.lost)):''}${kv('Остаётся без учёта закупки',m(R.net-R.tax-R.acq-R.receipt-R.exp-R.gifts))}</div>${feeHistory(a,b)}
 ${can('pay')?`<div class=acts><button class="btn sec blk" onclick="go('statementS')">Сверка СБП с выпиской</button></div>`:''}
 ${wl.length?`<div class=card><b>Списано за период</b>${wl.map(k=>kv(`${esc(k.name)}, ${esc(k.wo.reason)}`,m(k.wo.loss))).join('')}</div>`:''}
-<div class=card><b>Весь парк за всё время</b>${kv('Вложено (закупка, акк., обслуживание)',m(inv))}${kv('Получено от клиентов',m(all.net))}${kv('Разница',m(all.net-inv))}${lostAll?kv('В том числе убытки по списанным',m(lostAll)):''}</div>
+<div class=card><b>Весь парк за всё время</b>${kv('Вложено (закупка, оборудование, обслуживание, подарки)',m(inv))}${kv('Получено от клиентов',m(all.net))}${kv('Разница',m(all.net-inv))}${lostAll?kv('В том числе убытки по списанным',m(lostAll)):''}</div>
 <div class="card ${A.length?'t-er':''}"><b>Просрочка сейчас</b>${A.length?kv('Клиентов',A.length)+kv('Долг по платежам',m(debt))+kv('Неустойка набежала',m(pen))+A.map(x=>`<button class="kv" style="width:100%;background:none;border:0;border-top:1px solid var(--ln);color:inherit;text-align:left;cursor:pointer" onclick="go('deal','${x.d.id}')"><span style="color:inherit">${esc(nm(x.d.client))}</span><b>${x.I.ods[0].late} ${dayWord(x.I.ods[0].late)}</b></button>`).join(''):'<p class=mu style="margin:8px 0 0">Просрочек нет</p>'}</div>
 <div class="card ${DL.some(x=>x.g.over)?'t-er':DL.length?'t-wa':''}"><b>Должники</b>${DL.length?kv('Клиентов',DL.length)+kv('Остатки по периодам',m(DL.reduce((s,x)=>s+x.g.amt,0)))+kv('Неустойка набежала',m(DL.reduce((s,x)=>s+x.g.pen,0)))+DL.map(x=>`<button class="kv" style="width:100%;background:none;border:0;border-top:1px solid var(--ln);color:inherit;text-align:left;cursor:pointer" onclick="go('deal','${x.d.id}')"><span style="color:inherit">${esc(nm(x.d.client))}</span><b>${x.g.over?`${x.g.late} ${dayWord(x.g.late)}`:`до ${fs(x.g.due)}`}</b></button>`).join(''):'<p class=mu style="margin:8px 0 0">Должников нет</p>'}</div>
 <p class=sub>Эквайринг и чеки рассчитаны по ставкам, сохранённым при учёте платежа. Пометка «оценка» означает, что для старой оплаты взята ставка на день обновления приложения.</p>`}
-function terms(){const ds=S.deals.filter(d=>d.status!='seized'&&d.status!='lost'&&d.total),g={};ds.forEach(d=>{const n=d.original_n||d.n,p=d.total-d.cost-exc(d)-(d.tax||0)-(d.acq||0)-(d.receipt||0)-(d.bonuses||[]).reduce((sum,item)=>sum+item.amt,0),o=g[n]=g[n]||{n,c:0,p:0,k:0};o.c++;o.p+=p;o.k+=d.cost});
+function terms(){const ds=S.deals.filter(d=>d.status!='seized'&&d.status!='lost'&&d.total),g={};ds.forEach(d=>{const n=d.original_n||d.n,p=d.total-d.cost-exc(d)-giftCost(d)-(d.tax||0)-(d.acq||0)-(d.receipt||0)-(d.bonuses||[]).reduce((sum,item)=>sum+item.amt,0),o=g[n]=g[n]||{n,c:0,p:0,k:0};o.c++;o.p+=p;o.k+=d.cost});
 const L=Object.values(g).map(o=>({...o,ap:o.p/o.c,pc:o.k?o.p/o.k*100:0})).sort((a,b)=>a.n-b.n),best=L.reduce((x,y)=>!x||y.pc>x.pc?y:x,null);
-return fold('Выгодные сроки',(L.length?`<div class=grp>${L.map(o=>`<div class="row nl wr" style="cursor:default"><span class="gl ${o===best?'t-ok':''}">${o===best&&L.length>1?ic('check'):o.n}</span><span class=tx><b>${o.n} недель</b><span>средняя прибыль ${m(o.ap)}, ${o.pc.toFixed(0)}% от закупки</span></span><span class=rt>${chip(`${o.c} из ${ds.length}`)}</span></div>`).join('')}</div>`:empty('chart','Пока нет выкупов'))+`<p class=sub>Плановая прибыль при полной выплате: цена − скидки − закупка − допы − налог − эквайринг − чеки. Изъятые и списанные не учитываются.</p>`)}
+return fold('Выгодные сроки',(L.length?`<div class=grp>${L.map(o=>`<div class="row nl wr" style="cursor:default"><span class="gl ${o===best?'t-ok':''}">${o===best&&L.length>1?ic('check'):o.n}</span><span class=tx><b>${o.n} недель</b><span>средняя прибыль ${m(o.ap)}, ${o.pc.toFixed(0)}% от закупки</span></span><span class=rt>${chip(`${o.c} из ${ds.length}`)}</span></div>`).join('')}</div>`:empty('chart','Пока нет выкупов'))+`<p class=sub>Плановая прибыль при полной выплате учитывает скидки, закупку, оборудование, подарки, налог и комиссии.</p>`)}
 function disc(includeOpen=true){
     const by={};
     S.deals.forEach(d=>{
@@ -1170,7 +1220,7 @@ const repA=()=>seasonality()+terms()+discH()+bikesH()+parkInvestments()+forecast
 /* ---------- settings */
 const admTone=a=>a.disabled?['отключён','n']:a.tg?['вошёл','ok']:['ждёт входа','wa'];
 const expandedSettings=new Set();
-let tariffConfiguration='';
+let tariffConfiguration='',tariffAdvance=C.ADVANCES[0];
 const tariffDrafts=new Map();
 const DEFAULT_PURCHASE_COSTS={u2:59000,[C.tariffKey('u2',2)]:85000};
 const MAX_BUYOUT_AMOUNT=10000000;
@@ -1178,18 +1228,24 @@ function settingSection(key,title,body){
     return `<details class="card fold settings-menu" ${expandedSettings.has(key)?'open':''} ontoggle="if(this.isConnected)recordSettingSection('${key}',this.open)"><summary><b>${title}</b></summary>${body}</details>`;
 }
 function recordSettingSection(key,open){if(open)expandedSettings.add(key);else expandedSettings.delete(key)}
-function tariffForecast(weeks,weekly,cost){
+function tariffForecast(weeks,weekly,cost,down=tariffAdvance){
     const tax=TX(),acq=AQ(),receipt=RC();
-    const result=weekly?C.weeklyProfit({weekly,weeks,cost,tax,acq,receipt}):null;
+    const quote=weekly?quoteBuyout(weekly,weeks,down):null;
+    const problem=quote&&installmentProblem(quote);
+    if(problem)return `<p class=sub>${esc(problem)}</p>`;
+    const result=quote?forecastBuyout(quote,{cost}):null;
     const amount=field=>result?m(result[field]):'—';
-    const expenses=result?m(C.money(C.minor(result.gross)-C.minor(result.net))):'—';
+    const expenses=result?m(C.money(C.minor(result.gross)-C.minor(result.net)+C.minor(cost))):'—';
     const profit=cost?amount('profit'):'—';
     const percent=result&&cost?`<small>${pc(Math.round(result.pct*100)/100)}% от закупки</small>`:'';
     return `<dl class=tariff-totals>
         <div><dt>Выручка</dt><dd>${amount('gross')}</dd></div>
-        <div><dt>Расходы</dt><dd>${expenses}</dd></div>
+        <div><dt>${cost?'Расходы с закупкой':'Налог и комиссии'}</dt><dd>${expenses}</dd></div>
         <div><dt>Чистая прибыль</dt><dd>${profit}${percent}</dd></div></dl>
         ${result?`<dl class=tariff-fees>
+            <div><dt>Скидка за взнос</dt><dd>${m(quote.discount)}</dd></div>
+            <div><dt>При выдаче</dt><dd>${m(amountAtIssue(quote))}</dd></div>
+            ${quote.bal?`<div><dt>Обычный / последний платёж</dt><dd>${m(quote.pay)} / ${m(quote.last)}</dd></div>`:''}
             <div><dt>Эквайринг · ${pc(acq)}%</dt><dd>${amount('acq')}</dd></div>
             <div><dt>Чеки · ${pc(receipt)}%</dt><dd>${amount('receipt')}</dd></div>
             <div><dt>Налог · ${pc(tax)}%</dt><dd>${amount('tax')}</dd></div></dl>
@@ -1213,11 +1269,13 @@ function tariffSettings({key,name}){
             <label class=fld><span>Модель и аккумуляторы</span><select id=tariff-configuration onchange="tariffConfiguration=this.value;render(true)">
                 ${configurations.map(item=>`<option value="${item.key}" ${key==item.key?'selected':''}>${item.name}</option>`).join('')}
             </select></label>
+            <label class=fld><span>Первоначальный взнос для расчёта</span>
+                <select id=tariff-advance onchange="tariffAdvance=+this.value;updateTariffForecast(this)">${advanceOptions(tariffAdvance)}</select></label>
             <label class=fld><span>Закупка комплектации, ₽</span><input ${numberInput} value="${esc(cost)}" data-tariff-cost></label>
             <p class="mu tariff-hint" data-tariff-hint ${+cost?'hidden':''}>Укажите закупку, чтобы увидеть чистую прибыль.</p>
             <button type=button class="btn blk" onclick="saveTariffSettings(this)">Сохранить тарифы и закупку</button>
         </div>
-        <p class=sub>Прогноз на весь срок при еженедельных оплатах по СБП до скидок. Сохранённые взносы появятся в расчёте для клиента.</p>
+        <p class=sub>Прогноз учитывает скидку за выбранный взнос и оплату по СБП. Дополнительная скидка за оплату нескольких недель зависит от платежей клиента.</p>
         ${periods}
         </fieldset>`;
 }
@@ -1231,7 +1289,7 @@ function tariffsS(){
 function updateTariffForecast(input){
     const editor=input.closest('[data-tariff-editor]'),key=editor.dataset.tariffEditor;
     const cost=editor.querySelector('[data-tariff-cost]'),weeks=input.dataset.weeks;
-    if(input.checkValidity()){
+    if(input.id!='tariff-advance'&&input.checkValidity()){
         const draft=tariffDrafts.get(key)||{rates:{}};
         if(weeks)draft.rates[weeks]=input.value;
         else draft.cost=input.value;
@@ -1245,6 +1303,26 @@ function updateTariffForecast(input){
         const container=payment.closest('[data-tariff-term]').querySelector('[data-tariff-forecast]');
         container.innerHTML=tariffForecast(+payment.dataset.weeks,weekly,purchase);
     }
+}
+function advancePaymentsS(){
+    if(!isOwner())return backBtn()+empty('lock','Скидки настраивает владелец.');
+    const fields=C.ADVANCES.map(down=>`<label class=fld><span>Взнос ${m(down)} · скидка, ₽</span>
+        <input type=number min=0 max="${MAX_BUYOUT_AMOUNT}" step=1 inputmode=numeric data-advance="${down}" value="${advanceDiscount(down)}"></label>`).join('');
+    return `${backBtn()}<div class=hd><div><small>Настройки</small><h1>Первоначальный взнос</h1></div></div>
+        <div class=form data-advance-discounts>
+        <p class=sub>Скидка уменьшает полную стоимость выкупа для всех моделей и сроков. Укажите 0 ₽ для взноса без скидки.</p>
+        ${fields}<button type=button class="btn blk" onclick="saveAdvanceDiscounts(this)">Сохранить скидки</button></div>`;
+}
+async function saveAdvanceDiscounts(button){
+    if(!isOwner()||button.disabled)return;
+    const fields=[...button.closest('[data-advance-discounts]').querySelectorAll('[data-advance]')];
+    if(fields.some(field=>!field.checkValidity()))return uiAlert('Укажите скидки в целых рублях.');
+    const advanceDiscounts=Object.fromEntries(fields.map(field=>[field.dataset.advance,+field.value]));
+    button.disabled=true;
+    try{
+        await put('cfg',{...S.cfg,id:'cfg',advanceDiscounts});
+        hap('success');toast('Скидки сохранены');
+    }finally{button.disabled=false}
 }
 async function saveTariffSettings(button){
     if(!isOwner()||button.disabled)return;
@@ -1275,13 +1353,15 @@ function set(){
     const input=(id,label,value,min=0,max=100,step='any')=>`<label class=fld><span>${label}</span><input id=${id} type=number inputmode=decimal min=${min} max=${max} step=${step} value="${esc(value)}"></label>`;
     const form=(group,body)=>`<div class=form>${body}<div class=acts><button class="btn blk" onclick="saveSet('${group}')">Сохранить</button></div></div>`;
     const tariffs=`<div class=grp><button type=button class=row onclick="go('tariffsS')"><span class=gl>${ic('calc')}</span>
-        <span class=tx><b>Тарифы выкупа</b><span>Еженедельный взнос, выручка и расходы</span></span>${ic('right')}</button></div>`;
+        <span class=tx><b>Тарифы выкупа</b><span>Еженедельный взнос, выручка и расходы</span></span>${ic('right')}</button>
+        <button type=button class="row nl" onclick="go('advancePaymentsS')"><span class=gl>${ic('receipt')}</span>
+        <span class=tx><b>Первоначальный взнос</b><span>Скидки в рублях для пяти сумм взноса</span></span>${ic('right')}</button></div>`;
     const payments=form('payments',`<div class=f2>${input('multi_discount','Скидка от двух платежей, %',S.cfg.multi_discount??1.5)}${input('pen','Неустойка, % в день',pn)}
         ${input('dd','Отсрочка, дней',S.cfg.dd??2,1,365,1)}${input('dmin','Минимальная частичная оплата, %',DM(),50,100,1)}
         ${input('dbd','Срок на остаток, дней',DB(),0,365,1)}</div>
         <p class=sub>Скидка от двух платежей уменьшает взносы с конца графика. Отсрочка действует на один взнос. Если уже есть долг по взносу, сначала его нужно погасить.</p>`);
     const fees=form('fees',`<div class=f2>${input('tax','Налог с выручки, %',TX())}${input('acq','Эквайринг по СБП, %',AQ())}${input('receipt','Чеки по СБП, %',RC())}</div>
-        <p class=sub>Расходы на банк и чеки считаются по ставке, сохранённой при оплате. При оформлении плановые расходы считаются от полной цены выкупа.</p>`);
+        <p class=sub>Комиссии эквайринга и сервиса чеков считаются по СБП по ставкам, сохранённым при оплате. Расчёт налога учитывает поступления по всем способам оплаты.</p>`);
     const admins=`<div class=grp>${S.admins.map(a=>{const status=admTone(a);return `<button class=row onclick="go('fAdmin','${a.id}')"><span class="av t-${status[1]}">${esc(ini(a.name))}</span><span class=tx><b>${esc(a.name)}</b><span>${esc(a.phone)}</span></span><span class=rt>${chip(...status)}</span></button>`}).join('')}
         <button class="row nl" onclick="go('fAdmin')"><span class=gl>${ic('plus')}</span><span class=tx><b>Добавить администратора</b><span>Телефон, права, ссылка для входа</span></span></button></div>`;
     const messages=`<div class=grp><label class=sw><span class=tx><b>Сообщения вам</b><span>Сводка в 10:00, оплаты, входы и отсрочки</span></span><input type=checkbox ${S.cfg.nown?'checked':''} onchange="setNtf('nown',this)"></label>
@@ -1292,7 +1372,7 @@ function set(){
         <button class="btn sec" onclick="$('#rf').click()">${ic('up','s')}Восстановить</button></div>
         <input id=rf type=file accept=".json,application/json" hidden onchange="restoreFile(this)"></div>`;
     const log=`<div class=grp><button class="row nl" onclick="go('logS')"><span class=gl>${ic('list')}</span><span class=tx><b>Открыть журнал действий</b><span>Кто и что менял</span></span>${ic('right')}</button></div>`;
-    return `<div class=hd><div><small>Версия 13</small><h1>Настройки</h1></div></div>`
+    return `<div class=hd><div><small>Версия 14</small><h1>Настройки</h1></div></div>`
         +tariffs
         +settingSection('payments','Платежи, отсрочка и неустойка',payments)
         +settingSection('fees','Налог и комиссии',fees)
@@ -1467,6 +1547,9 @@ function journalFields(data,kind,action){
     set('Клиент',data.client,id=>S.clients.find(item=>item.id==id)?.name||id);
     set('Велосипед',data.bike,id=>S.bikes.find(item=>item.id==id)?.name||id);
     set('Служебная заметка',data.private_note?.text);
+    set('Описание подарка',data.gift?.name);
+    set('Стоимость подарка',data.gift?.amount,m);
+    set('Скидка за взнос при выдаче',data.tariff?.advanceDiscount,m);
     set('Подготовка',data.preparation?.status,value=>PREP[value]?.[0]||value);
     set('Дата подготовки',data.preparation?.updated,journalDate);
     set('Причина списания',data.wo?.reason);
@@ -1495,6 +1578,7 @@ function journalFields(data,kind,action){
         for(const weeks of C.WEEKLY_TERMS)set(`${name} · ${weeks} нед.`,rates[weeks],m);
         set(`Закупка · ${name}`,data.purchaseCosts?.[key],m);
     }
+    for(const advance of C.ADVANCES)set(`Скидка при взносе ${m(advance)}`,data.advanceDiscounts?.[advance],m);
     if(isDeal&&data.start&&data.type){
         if(action.startsWith('defer-')){
             for(const row of C.sched(data))set(`Взнос ${row.k} · срок оплаты`,C.deadline(data,row),journalDate);
@@ -2055,7 +2139,7 @@ async function chooseStatementDeal(operation){
     if(id&&await paymentOptions(id,true,operation))await refreshStatement();
 }
 
-const SCR={home,base,add,fClient,fBike,fDeal,deal,debtS,calcS,rep,set,tariffsS,expS,woS,swapS,bikeView,fAdmin,logS,statementS};
+const SCR={home,base,add,fClient,fBike,fDeal,deal,debtS,calcS,rep,set,tariffsS,advancePaymentsS,expS,woS,swapS,bikeView,fAdmin,logS,statementS};
 /* ---------- client */
 let CV=['main'];
 const cgo=s=>{CV.push(s);navDir='fw';crender()},cback=()=>{if(CV.length>1){CV.pop();navDir='bw'}crender()};

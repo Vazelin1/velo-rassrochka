@@ -3,6 +3,7 @@ const MK={w:{8:30,12:42,16:55,20:68,26:88},m:{2:30,3:42,4:55,5:68,6:88}},DS={300
 const BIKE_MODELS={monster:'Монстр',u2:'U2',u2pro:'U2 Pro'};
 const BATTERY_COUNTS=[1,2];
 const WEEKLY_TERMS=[8,12,16,20,26];
+const ADVANCES=[10000,20000,30000,40000,50000];
 const tariffKey=(model,batteries=1)=>batteries===2?model+'-2-akb':model;
 const up=(x,s)=>Math.ceil(x/s-1e-9)*s;
 function add(d,n){const t=new Date(d+'T00:00:00Z');t.setUTCDate(t.getUTCDate()+n);return t.toISOString().slice(0,10)}
@@ -18,6 +19,34 @@ const rounded=up(bal/o.n,o.type=='w'?100:1000), balance=minor(bal);
 const pay=balance<=0?0:fixed?money(Math.floor(balance/o.n)):balance>minor(rounded)*(o.n-1)?rounded:Math.floor(bal/o.n)||money(Math.floor(balance/o.n));
 const last=money(balance-minor(pay)*(o.n-1));
 return{mk,d,bike,total,bal,pay,last,tax,acq,receipt,profit,pct:cost?profit/cost*100:0}}
+function buyoutQuote({weekly,weeks,down,discount}){
+    const baseTotal=Math.round(minor(weekly)*weeks/100),total=baseTotal-discount;
+    const bal=total-down,pay=bal>0?Math.floor(bal/weeks):0;
+    const last=bal>0?bal-pay*(weeks-1):0;
+    return {baseTotal,total,down,discount,weeks,bal,pay,last};
+}
+function receiptCharges(cash,{tax,acq,receipt}){
+    const charge=rate=>{
+        const percent=Number(rate);
+        if(!cash||!(percent>0&&percent<=100))return 0;
+        const [coefficient,exponent=0]=String(percent).split('e');
+        const [integer,decimals='']=coefficient.split('.');
+        const divisor=10n**BigInt(decimals.length+2-Number(exponent));
+        const numerator=BigInt(Math.abs(cash))*BigInt(integer+decimals);
+        return Math.sign(cash)*Number((numerator+divisor/2n)/divisor);
+    };
+    return {tax:charge(tax),acq:charge(acq),receipt:charge(receipt)};
+}
+function buyoutForecast(quote,{cost=0,gift=0,tax,acq,receipt,issueMethod='СБП'}){
+    const issue=minor(quote.down+quote.pay),regular=minor(quote.pay),final=minor(quote.last);
+    const charges=receiptCharges(issue,{tax,acq:issueMethod=='СБП'?acq:0,receipt:issueMethod=='СБП'?receipt:0});
+    const next=receiptCharges(regular,{tax,acq,receipt}),last=receiptCharges(final,{tax,acq,receipt});
+    const gross=minor(quote.total);
+    for(const kind of Object.keys(charges))charges[kind]+=next[kind]*(quote.weeks-2)+last[kind];
+    const net=gross-charges.tax-charges.acq-charges.receipt,profit=net-minor(cost)-minor(gift);
+    return {gross:money(gross),tax:money(charges.tax),acq:money(charges.acq),receipt:money(charges.receipt),
+        net:money(net),profit:money(profit),pct:cost?profit/minor(cost)*100:0};
+}
 function weeklyProfit({weekly,weeks,cost,tax,acq,receipt}){
     const payment=minor(weekly),gross=payment*weeks;
     const totalFee=rate=>Math.round(payment*rate/100)*weeks;
@@ -191,6 +220,6 @@ function replan(d,firstDue,weekly,date=today(),clientAnchor=null){
         keptOverdue:kept.filter(row=>!paid[row.k]&&deadline(d,row)<date).reduce((sum,row)=>sum+row.amt,0),
         keptDeferred:deferred.reduce((sum,row)=>sum+row.amt,0),debt:dstat(d,date)?.total||0};
 }
-const C={MK,BIKE_MODELS,BATTERY_COUNTS,WEEKLY_TERMS,tariffKey,calc,weeklyProfit,sched,deadline,unpaid,penalty,pdays,nopen,penaltyDetail,dstat,paymentQuote,changeable,scheduleBounds,replan,add,diff,today,minor,money};
+const C={MK,BIKE_MODELS,BATTERY_COUNTS,WEEKLY_TERMS,ADVANCES,tariffKey,calc,buyoutQuote,receiptCharges,buyoutForecast,weeklyProfit,sched,deadline,unpaid,penalty,pdays,nopen,penaltyDetail,dstat,paymentQuote,changeable,scheduleBounds,replan,add,diff,today,minor,money};
 if(typeof module!='undefined')module.exports=C;else g.C=C;
 })(this);
