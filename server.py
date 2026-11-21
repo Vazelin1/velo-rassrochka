@@ -20,7 +20,7 @@ KINDS=('client','bike','deal','cfg','admin','qr','unk','bill','tch','reschedule'
 SRV=('qr','unk','bill','tch','reschedule','paymentreport','statementlink')
 PERMS=('pay','early','pen','clients','deals','bikes','reports')
 FINP={'deals','bikes','reports'}  # rights that let an administrator see prices, purchase costs and profit
-HID={'deal':('total','tax','acq','receipt','cost','disc','mk','extras','down','refund','down_fees','tariff','gift'),'bike':('cost','exp','wo')}
+HID={'deal':('total','tax','acq','receipt','cost','disc','mk','extras','down','refund','down_fees','tariff','gift','payoff_terms'),'bike':('cost','exp','wo')}
 PUBCFG=('id','dd','pen','dmin','dbd','multi_discount')
 BIKE_MODELS=('monster','u2','u2pro')
 BATTERY_COUNTS=(1,2)
@@ -34,6 +34,7 @@ ADVANCES=(10000,20000,30000,40000,50000)
 LEGACY_WEEKLY_TERMS={str(weeks) for weeks in range(8,27)}
 WEEKLY_TERM_LIST=', '.join(map(str,WEEKLY_TERMS))
 CLIENT_DEFERRAL_LIMIT=4
+CLIENT_PAYOFF_MIN_PERIODS=4
 ID=re.compile(r'[a-z0-9]{1,16}')
 NO=object()
 def strip(x):
@@ -90,6 +91,7 @@ def payment_deadline(d, installment):
     ])
 
 def unpaid_installments(d, schedule=None):
+    if d.get('payoff'):return []
     paid = d.get('paid') or {}
     return sorted((x for x in (sched(d) if schedule is None else schedule) if str(x['k']) not in paid),
                   key=lambda x: payment_deadline(d, x))
@@ -154,14 +156,17 @@ def payment_public(deal):
         'paid': {k: public(p) for k,p in (deal.get('paid') or {}).items()},
         'early': [public(p) for p in deal.get('early') or []],
         'dpays': [public(p) for p in deal.get('dpays') or []],
+        'payoff': public(deal['payoff']) if deal.get('payoff') else None,
     }
 
 def mine(cid):
-    c=doc(cid) or {};out=[]
+    c=doc(cid) or {};out=[];date=tod()
     for i,d in db.execute("select id,data from docs where kind='deal'").fetchall():
         d=json.loads(d)
         if d['client']==cid:
-            out.append(payment_public(d)|{'id':i,'bike':(doc(d['bike']) or {}).get('name','')})
+            quote=early_buyout_quote(d,date,client=True)
+            out.append(payment_public(d)|{'id':i,'bike':(doc(d['bike']) or {}).get('name',''),
+                                         'payoff_quote':quote})
     ids={o['id'] for o in out};bills=[{'id':i,'deal':z['deal'],'amt':z['amt'],'kind':z['kind'],'ts':z.get('ts')} for i,z in docs_of('bill') if z.get('status')=='open' and z.get('deal') in ids]
     cf=doc('cfg') or {}
     requests=[{**z,'id':i} for i,z in docs_of('reschedule') if z.get('deal') in ids]
@@ -185,7 +190,8 @@ def vw(k,d,f,owner=False):
     if k=='cfg':return {x:y for x,y in d.items() if x in PUBCFG}
     out = {x:y for x,y in d.items() if x not in HID.get(k,())}
     if k == 'deal':
-        for field in ('paid','early','dpays'):
+        if d.get('payoff_terms'):out['payoff_enabled']=True
+        for field in ('paid','early','dpays','payoff'):
             if field in d:
                 out[field] = payment_public(d)[field]
     return out
@@ -211,9 +217,12 @@ def amerge(P,k,old,new):
     if old is None:return new if {'client':'clients','bike':'bikes','deal':'deals'}[k] in P else None
     hid=() if hasfin(P) else HID.get(k,())
     m={x:y for x,y in new.items() if x not in hid}
+    if k=='deal':m.pop('payoff_enabled',None)
     for x in hid:
         if x in old:m[x]=old[x]
     if k=='deal' and hid:
+        if old.get('payoff') and m.get('payoff')==payment_public(old)['payoff']:
+            m['payoff']=old['payoff']
         for kind,key,payment in receipt_parts(m):
             previous=receipt_part(old,kind,key)
             if previous and receipt_cash(previous,kind)==receipt_cash(payment,kind):
@@ -287,6 +296,8 @@ def validate_backup(records,bindings):
             if not isinstance(data.get('paid'),dict):raise Bad(f'В копии повреждены оплаты выкупа {identifier}.')
             for field in ('dpays','early','bonuses','extras'):objects(data,field)
             if 'gift' in data:data['gift']=validate_gift(data['gift'])
+            if 'payoff_terms' in data:validate_payoff_terms(data)
+            if 'payoff' in data:validate_payoff_record(data)
             for swap in objects(data,'swaps'):
                 require(swap.get('from'),'bike');valid_date(swap.get('date'))
                 if swap.get('to'):require(swap['to'],'bike')
@@ -388,8 +399,10 @@ def receipt_parts(d):
     yield from (('paid',k,p) for k,p in (d.get('paid') or {}).items())
     for kind in ('early','dpays'):
         yield from ((kind,k,p) for k,p in enumerate(d.get(kind) or []))
+    if d.get('payoff'):yield 'payoff',None,d['payoff']
 
 def receipt_part(d,kind,key):
+    if kind=='payoff':return d.get('payoff')
     records=d.get(kind) or ({} if kind=='paid' else [])
     return records.get(key) if kind=='paid' else records[key] if key<len(records) else None
 
@@ -438,7 +451,7 @@ def pdays(b,T,d):
     return max(0,n)
 def dstat(d,T):
     g=d.get('debt')
-    if not g or not g.get('amt',0)>0:return None
+    if d.get('payoff') or not g or not g.get('amt',0)>0:return None
     b=g['pb'] if g.get('pb') and g['pb']>g['due'] else g['due'];n=pdays(b,T,d);pe=penalty(g['amt'],n,d.get('pen'))
     return {'amt':g['amt'],'due':g['due'],'k':g['k'],'days':n,'pen':pe,'total':money(minor(g['amt'])+minor(pe)),'late':max(0,diff(T,g['due'])),'over':T>g['due'],'base':b}
 def info(d,t=None):
@@ -515,6 +528,92 @@ def validate_tariffs(tariffs, previous=None, *, restoring=False):
             legacy=term in LEGACY_WEEKLY_TERMS and (restoring or (term in old_rates and amount==old_rates[term]))
             if term not in terms and not legacy:raise Bad(f'Доступные сроки выкупа: {WEEKLY_TERM_LIST} недель.')
             rates[term]=positive_amount(amount)
+
+def payoff_terms(d,tariffs):
+    """Freeze comparable shorter prices with the deal's existing advance discount."""
+    tariff=d.get('tariff') or {}
+    weeks=tariff.get('weeks')
+    if d.get('type')!='w' or weeks not in WEEKLY_TERMS:return []
+    rates=tariffs.get(tariff_key(tariff.get('model'),tariff.get('batteries',1)),{})
+    current=minor(d['total']);terms=[{'weeks':weeks,'price':money(current)}]
+    discounts=minor(tariff.get('advanceDiscount',0))
+    extras=sum(minor(x['price']) for x in d.get('extras') or [])
+    for shorter in reversed(WEEKLY_TERMS):
+        if shorter>=weeks or not rates.get(str(shorter)):continue
+        price=((minor(rates[str(shorter)])*shorter+50)//100)*100-discounts+extras
+        if not 0<price<current:continue
+        terms.append({'weeks':shorter,'price':money(price)})
+        current=price
+    return terms[::-1] if len(terms)>1 else []
+
+def validate_payoff_terms(d):
+    points=d['payoff_terms']
+    if not isinstance(points,list) or not 2<=len(points)<=len(WEEKLY_TERMS):
+        raise Bad('В копии повреждены тарифы досрочного выкупа.')
+    previous_weeks=previous_price=0
+    for point in points:
+        if not isinstance(point,dict) or type(point.get('weeks')) is not int or point['weeks'] not in WEEKLY_TERMS:
+            raise Bad('В копии повреждены сроки досрочного выкупа.')
+        weeks,price=point['weeks'],minor(positive_amount(point.get('price')))
+        if weeks<=previous_weeks or price<=previous_price:raise Bad('В копии нарушен порядок тарифов досрочного выкупа.')
+        previous_weeks,previous_price=weeks,price
+    if previous_weeks!=(d.get('tariff') or {}).get('weeks') or previous_price!=minor(d['total']):
+        raise Bad('Тариф досрочного выкупа не совпадает с договором.')
+
+def validate_payoff_record(d):
+    record=d['payoff']
+    if not isinstance(record,dict) or not d.get('payoff_terms'):
+        raise Bad('В копии повреждена запись о досрочном выкупе.')
+    date=valid_date(record.get('date'))
+    quote=early_buyout_quote({**d,'status':'active','payoff':None},date)
+    if not quote or any(record.get(key)!=quote[q] for key,q in (
+        ('amt','principal'),('pen','pen'),('saved','saved'),('price','price')
+    )) or (quote['total']>0 and record.get('method') not in ('наличные','СБП','перевод')):
+        raise Bad('В копии не сходится сумма досрочного выкупа.')
+
+def early_buyout_quote(d,date,*,client=False):
+    terms=d.get('payoff_terms')
+    if not terms or d.get('payoff') or d.get('status')!='active' or date<d['start']:return None
+    installments=info(d,date)
+    if installments['done']:return None
+    debt=installments['g'] or {}
+    if client:
+        first=installments['sc'][:CLIENT_PAYOFF_MIN_PERIODS]
+        paid_periods=d.get('paid') or {}
+        debt_key=str(debt.get('k'))
+        if len(first)<CLIENT_PAYOFF_MIN_PERIODS or any(
+            str(row['k']) not in paid_periods or str(row['k'])==debt_key for row in first
+        ):return None
+    if any(p['date']>date for _,_,p in receipt_parts(d)):return None
+    paid=minor(d.get('down') or 0)+sum(
+        minor(p.get('paid',p['amt']) if kind=='early' else p['amt']) for kind,_,p in receipt_parts(d)
+    )
+    balance=sum(minor(x['amt']) for x in installments['un'])+minor(debt.get('amt',0))
+    elapsed=diff(date,d['start'])
+    step=1 if any(minor(x['price'])%100 for x in terms) else 100
+    target=minor(terms[-1]['price'])
+    for i,point in enumerate(terms):
+        day=point['weeks']*7-1
+        if elapsed>day:continue
+        target=minor(point['price'])
+        if i:
+            prev=terms[i-1]
+            span=(point['weeks']-prev['weeks'])*7
+            weighted=minor(prev['price'])*(day-elapsed)+target*(span-day+elapsed)
+            target=((2*weighted+span*step)//(2*span*step))*step
+        break
+    principal=max(0,target-paid);saved=balance-principal
+    if saved<=0:return None
+    pen=minor(installments['pen']+debt.get('pen',0))
+    return {'date':date,'price':money(paid+principal),'paid':money(paid),'principal':money(principal),
+            'saved':money(saved),'pen':money(pen),'total':money(principal+pen),
+            'terms':[{**point,'until':add(d['start'],point['weeks']*7-1)} for point in terms],
+            'version':d.get('_v',0)}
+
+def record_early_buyout(d,quote,method,qr=None,fees=None):
+    d['payoff']={'date':quote['date'],'amt':quote['principal'],'pen':quote['pen'],
+                 'saved':quote['saved'],'price':quote['price'],'method':method,'source':qr or nid(),
+                 'fees':fees or fee_rates(method),**({'qr':qr} if qr else {})}
 
 def payment_quote(d,options,t,settings=None):
     if not isinstance(options,dict):raise Bad('Выберите способ оплаты.')
@@ -648,6 +747,7 @@ def apply_payment(d,quote,method,qr=None,fees=None):
     return group
 
 def changeable_installments(d, date, schedule=None):
+    if d.get('payoff'):return []
     paid = d.get('paid') or {}
     current = sched(d) if schedule is None else schedule
     return [x for x in current if str(x['k']) not in paid and x['due'] >= date and payment_deadline(d,x) == x['due']]
@@ -731,6 +831,8 @@ def fingerprint(d):
             data[field] = payment_public(d)[field]
     grants=[grant for grant in d.get('defer') or [] if grant.get('until')]
     if grants:data['deferrals']=grants
+    for field in ('payoff_terms','payoff'):
+        if d.get(field):data[field]=d[field] if field=='payoff_terms' else payment_public(d)[field]
     return hashlib.sha256(json.dumps(data,sort_keys=True).encode()).hexdigest()
 
 def completion_notice(old,new):
@@ -739,7 +841,7 @@ def completion_notice(old,new):
         new.pop('completed_at',None)
         return
     if not new.get('completed_at'):
-        new['completed_at']=tod()
+        new['completed_at']=(new.get('payoff') or {}).get('date') or tod()
         tell(new.get('client'),'Все платежи по выкупу внесены. Приезжайте для подписания документов и получения второго комплекта ключей. Перед приездом согласуйте время с нами.')
 
 # ---------- what can be paid, and how a payment is applied to the deal ----------
@@ -1123,7 +1225,7 @@ def qr_paid(t,ids):
 def qr_expiry(q):
     if q.get('expires'):return dt.datetime.fromisoformat(q['expires'])
     return dt.datetime.combine(D(q['date'])+dt.timedelta(days=1),dt.time(),MSK)
-def qr_amount(d,kind_,t,bill=None,options=None,settings=None):
+def qr_amount(d,kind_,t,bill=None,options=None,settings=None,*,client=False):
     """(amount, penalty inside it, periods) of a QR of this kind right now; raises Bad when there is nothing to pay."""
     if kind_=='now':
         z=q_now(d,t)
@@ -1132,6 +1234,12 @@ def qr_amount(d,kind_,t,bill=None,options=None,settings=None):
     if kind_=='selection':
         z=payment_quote(d,options or {},t,settings)
         return z['total'],z['pen'],[x['k'] for x in z['items']],z
+    if kind_=='payoff':
+        z=early_buyout_quote(d,t,client=client)
+        if not z or not z['total']:raise Bad('Сейчас досрочный платёж недоступен.')
+        if not options or options.get('version')!=z['version'] or options.get('date')!=t or options.get('total')!=z['total']:
+            raise Bad('Условия изменились. Откройте расчёт досрочного выкупа заново.')
+        return z['total'],z['pen'],None,z
     if kind_=='debt':
         z=q_debt(d,t)
         if not z:raise Bad('Долга нет.')
@@ -1165,15 +1273,16 @@ def register_qr(u,cl,b):
         if not isinstance(options,dict):raise Bad('Выберите способ оплаты.')
         settings={key:cfgv(key,default) for key,default in (('multi_discount',1.5),('dmin',50),('dbd',3))}
         before=fingerprint(d)
-        amt,pe,ks,quote=qr_amount(d,k,t,bill,options,settings)
+        amt,pe,ks,quote=qr_amount(d,k,t,bill,options,settings,client=cl)
         for j,q in docs_of('qr'):
             if q.get('deal')==i and q.get('status')=='open' and not q.get('access_revoked') and q.get('date')==t and qr_expiry(q)>dt.datetime.now(MSK) and q.get('kind')==k and q.get('amt')==amt and q.get('bill')==(bid if bill else None) and q.get('fingerprint')==before and q.get('quote')==quote:return {'qr':j}
-        purpose=f"Выкуп электровелосипеда, договор {d.get('contract') or '—'}, {(doc(d.get('client')) or {}).get('name','')}"
+        title='Досрочный выкуп' if k=='payoff' else 'Выкуп'
+        purpose=f"{title} электровелосипеда, договор {d.get('contract') or '—'}, {(doc(d.get('client')) or {}).get('name','')}"
         actor=client_log_actor(x) if cl else str(x[1].get('name') or 'Администратор')[:40] if ro=='admin' else 'Владелец'
     m=qr_make(tc,amt,purpose)
     with L:
         d=doc(i);bill=doc(bid) if bill else None
-        if not d or fingerprint(d)!=before or qr_amount(d,k,t,bill,options,settings)[0]!=amt or tod()!=t:raise Bad('Данные изменились, откройте экран заново.')
+        if not d or fingerprint(d)!=before or qr_amount(d,k,t,bill,options,settings,client=cl)[0]!=amt or tod()!=t:raise Bad('Данные изменились, откройте экран заново.')
         qid=nid();put_srv(qid,'qr',{'deal':i,'kind':k,'amt':amt,'pen':pe,'ks':ks,'quote':quote,'options':options,'settings':settings,'fingerprint':before,'bill':bid if bill else None,'date':t,'status':'open','tid':m['id'],'payload':m['payload'],'img':m['img'],'expires':m.get('expires'),'ts':dt.datetime.now(MSK).isoformat(timespec='seconds')},'qr',actor)
         db.commit();return {'qr':qid}
 
@@ -1205,7 +1314,12 @@ def on_paid(qid,q,payment=None):
     if d and d.get('status')=='active' and t==q['date'] and (not q.get('fingerprint') or q['fingerprint']==fingerprint(d)):
         d2=copy.deepcopy(d)
         try:
-            if q.get('quote') and q['kind'] in ('now','selection'):
+            if q['kind']=='payoff':
+                quote=early_buyout_quote(d2,t)
+                accepted=q.get('quote') or {}
+                if quote and quote['total']==q['amt'] and all(quote.get(k)==accepted.get(k) for k in ('price','saved','pen','principal')):
+                    record_early_buyout(d2,quote,'СБП',qid,q['fees']);left=0;ok=True
+            elif q.get('quote') and q['kind'] in ('now','selection'):
                 quote=q['quote']
                 if quote['total']==q['amt']:
                     apply_payment(d2,quote,'СБП',qid);left=0;ok=True
@@ -1224,7 +1338,9 @@ def on_paid(qid,q,payment=None):
                     left=apply_money(d2,b['kind'],q['amt'],t,'СБП',qid);ok=True
                     ob=dict(b);b['status']='paid';b['paid']=dt.datetime.now(MSK).isoformat(timespec='seconds');put_srv(q['bill'],'bill',b,'bill-paid','Банк',ob)
         except Bad as e:ok=False;why=str(e)
-        if ok:put_srv(q['deal'],'deal',d2,'pay-qr','',d)
+        if ok:
+            if q['kind']=='payoff':save_accepted_payoff(q['deal'],d,d2,t,'Банк')
+            else:put_srv(q['deal'],'deal',d2,'pay-qr','',d)
     c=(doc((d or {}).get('client','')) or {}).get('name','')
     if ok and left<=0:say(f"Оплата по QR: {c}, {rub(q['amt'])}.")
     else:
@@ -1343,15 +1459,20 @@ def owner_act(p,b,ro,x,P):
                 raise Bad('Операция уже связана со строкой выписки. Проверьте запись о платеже в выкупе.')
             method=z.get('method','СБП');fees=qr.get('fees') or fee_rates(method);source=z.get('source') or z.get('qr') or i
             d2=copy.deepcopy(d)
-            if b['kind']=='original':
+            if b['kind']=='original' and qr.get('kind')=='payoff':
+                quote=early_buyout_quote(d2,date)
+                if not quote or quote['total']!=z['amt']:raise Bad('Сумма досрочного выкупа изменилась. Проверьте поступление и график.')
+                record_early_buyout(d2,quote,method,z.get('qr'),fees);left=0
+            elif b['kind']=='original':
                 quote=payment_quote(d2,qr.get('options') or {'count':len(qr.get('ks') or []) or 1},date,qr.get('settings'))
                 if quote['total']!=z['amt'] or [x['k'] for x in quote['items']]!=qr.get('ks'):
                     raise Bad('Сумма или периоды исходного QR изменились. Выберите взнос или погашение долга.')
                 apply_payment(d2,quote,method,z.get('qr'),fees=fees);left=0
             else:left=apply_money(d2,b['kind'],z['amt'],date,method,z.get('qr'),fees=fees,source=source)
             parts=[payment for kind,key,payment in receipt_parts(d2) if receipt_part(d,kind,key)!=payment and payment.get('source')==source]
+            debt=dstat(d2,date) or {}
             plan={'version':d.get('_v',0),'date':date,'pen':money(sum(minor(p.get('pen') or 0) for p in parts)),
-                  'allocated':money(minor(z['amt'])-minor(left)),'surplus':left,'debt':(d2.get('debt') or {}).get('amt',0),'debtDue':(d2.get('debt') or {}).get('due')}
+                  'allocated':money(minor(z['amt'])-minor(left)),'surplus':left,'debt':debt.get('amt',0),'debtDue':debt.get('due')}
             if b['do']=='preview':return plan
             check_version(d,b)
             if b.get('expected')!=plan:raise Bad('Расчёт изменился. Проверьте оплату ещё раз.')
@@ -1359,7 +1480,8 @@ def owner_act(p,b,ro,x,P):
                 qr_before=copy.deepcopy(qr);qr.update(paidDate=date,status='paid',fees=fees)
                 if reference:qr.setdefault('refTransactionId',reference)
                 put_srv(z['qr'],'qr',qr,'qr-reconciled',by,qr_before)
-            put_srv(z['deal'],'deal',d2,'unk-apply',by,d)
+            if d2.get('payoff') and not d.get('payoff'):save_accepted_payoff(z['deal'],d,d2,date,by)
+            else:put_srv(z['deal'],'deal',d2,'unk-apply',by,d)
             z.update(status='applied',date=date,resolvedAt=dt.datetime.now(MSK).isoformat())
             if reference:z['reference']=reference
             put_srv(i,'unk',z,'unk-apply',by,old)
@@ -1540,6 +1662,7 @@ def validate_new_deal(d,t):
             raise Bad('Сумма и способ оплаты первого взноса должны совпадать с графиком.')
         first['amt']=money(regular)
     d.update(tariff=tariff,cost=bike.get('cost',0),down=advance,total=money(price),pay=money(regular),last=money(last))
+    if terms:=payoff_terms(d,cfgv('tariffs',{})):d['payoff_terms']=terms
     tax=cfgv('tax',7)
     future_rates={'tax':tax if 0<=tax<=100 else 0,**fee_rates('СБП')}
     issue_rates={**future_rates,**fee_rates(method)}
@@ -1552,6 +1675,53 @@ def close_pending_schedule(key,t,by):
     for request_id,request in docs_of('reschedule'):
         if request.get('deal')==key and request.get('status')=='pending':
             previous=dict(request);request.update(status='closed',decided=t);put_srv(request_id,'reschedule',request,'reschedule-close',by,previous)
+
+def save_accepted_payoff(key,old,d,date,by):
+    put_srv(key,'deal',d,'pay-early-buyout',by,old)
+    close_pending_schedule(key,date,by)
+    for bid,bill in docs_of('bill'):
+        if bill.get('deal')==key and bill.get('status')=='open':
+            put_srv(bid,'bill',{**bill,'status':'void'},'bill-void',by,bill)
+
+def early_buyout_action(b,ro,x,t,by):
+    operation=b.get('do')
+    key,d=action_deal(b,ro,x,allow_client=operation in ('quote','settle'))
+    if operation in ('enable','enable-preview'):
+        if ro!='owner' or d.get('status')!='active' or d.get('payoff_terms') or info(d,t)['done']:
+            raise Bad('Настройка досрочного выкупа недоступна.')
+        terms=payoff_terms(d,cfgv('tariffs',{}))
+        if not terms:raise Bad('В тарифах комплектации нет более выгодного короткого срока.')
+        quote=early_buyout_quote({**d,'payoff_terms':terms},t)
+        if not quote:raise Bad('На текущую дату снижение цены недоступно.')
+        if operation=='enable':
+            check_version(d,b)
+            if b.get('terms')!=quote['terms']:raise Bad('Тарифы изменились. Проверьте расчёт ещё раз.')
+            old=copy.deepcopy(d);d['payoff_terms']=terms
+            put_srv(key,'deal',d,'enable-early-buyout',by,old)
+        return quote
+    if operation=='cancel':
+        check_version(d,b)
+        if d.get('status')!='active' or not d.get('payoff') or d['payoff'].get('qr'):
+            raise Bad('Отмена доступна для ручной отметки до подписания документов.')
+        old=copy.deepcopy(d);d.pop('payoff')
+        put_srv(key,'deal',d,'cancel-early-buyout',by,old)
+        return {}
+    date=t if ro=='client' else deal_payment_date(d,b.get('date',t),t)
+    quote=early_buyout_quote(d,date,client=ro=='client')
+    if not quote:raise Bad('На выбранную дату досрочный выкуп со скидкой недоступен.')
+    duplicate=possible_duplicate(key,date,quote['total']) if ro!='client' else None
+    if operation=='quote':return {**quote,**({'duplicate':duplicate} if duplicate else {})}
+    if operation!='settle':raise Bad('Неверное действие.')
+    check_version(d,b)
+    if b.get('total')!=quote['total'] or b.get('saved')!=quote['saved'] or b.get('date')!=date:
+        raise Bad('Условия изменились. Проверьте новый расчёт.')
+    if ro=='client' and quote['total']:raise Bad('Для подтверждения дождитесь оплаты по QR.')
+    method=b.get('method') if quote['total'] else None
+    if quote['total'] and method not in ('наличные','СБП','перевод'):raise Bad('Выберите способ оплаты.')
+    if duplicate and b.get('confirmedDuplicate')!=duplicate['source']:raise Bad('По QR уже есть платёж на эту сумму. Проверьте операцию.')
+    old=copy.deepcopy(d);record_early_buyout(d,quote,method)
+    save_accepted_payoff(key,old,d,date,by)
+    return quote
 
 def move_payment(d,source,target,t):
     source=str(whole(source,'номер периода'));target=whole(target,'номер периода')
@@ -1661,6 +1831,7 @@ def workflow_action(p,b,ro,x):
     """Authorised business actions run in one database transaction under L."""
     t=tod();by=str(x[1].get('name',''))[:40] if ro=='admin' else ''
     if ro=='client':by=client_log_actor(x)
+    if p=='/api/early-buyout':return early_buyout_action(b,ro,x,t,by)
     if p=='/api/defer':return grant_deferral(b,ro,x,t,by)
     if p=='/api/calendar':
         key,d=action_deal(b,ro,x,permission='deals',allow_client=True)
@@ -1699,7 +1870,7 @@ def workflow_action(p,b,ro,x):
         return {'remaining':(d.get('debt') or {}).get('amt',0)}
     if p=='/api/cancel-debt-pay':
         key,d=action_deal(b,ro,x);check_version(d,b)
-        if d.get('status')!='active':raise Bad('Выкуп закрыт.')
+        if d.get('status')!='active' or d.get('payoff'):raise Bad('Выкуп закрыт.')
         old=copy.deepcopy(d);source=cancel_debt_payment(d)
         if source:clear_statement_surplus(key,{source},t,by)
         put_srv(key,'deal',d,'cancel-debt-pay',by,old)
@@ -1760,6 +1931,7 @@ def workflow_action(p,b,ro,x):
     if p in ('/api/payquote','/api/pay','/api/move-payment','/api/cancel-payment'):
         key,d=action_deal(b,ro,x,allow_client=p=='/api/payquote')
         if d.get('status')!='active':raise Bad('Выкуп закрыт.')
+        if d.get('payoff'):raise Bad('Выкуп полностью выплачен досрочно.')
         if p=='/api/payquote':
             date=deal_payment_date(d,b.get('date',t),t) if ro in ('owner','admin') else t
             options=b.get('options') or {};statement=b.get('statement')
@@ -2039,7 +2211,7 @@ class H(BaseHTTPRequestHandler):
             return s.send(200,json.dumps({'url':'/img/'+k}).encode())
         with L:
             ro,x=role(u)
-            if p in ('/api/payquote','/api/pay','/api/pay-debt','/api/cancel-debt-pay','/api/move-payment','/api/cancel-payment','/api/defer',
+            if p in ('/api/payquote','/api/pay','/api/pay-debt','/api/cancel-debt-pay','/api/move-payment','/api/cancel-payment','/api/defer','/api/early-buyout',
                      '/api/reschedule-request','/api/reschedule','/api/reschedule-manual','/api/close-deal','/api/return-deal',
                      '/api/calendar','/api/tariff-image','/api/deal-note','/api/bike-preparation','/api/bike-writeoff','/api/payment-report','/api/statement'):
                 try:
@@ -2106,6 +2278,12 @@ class H(BaseHTTPRequestHandler):
                             return s.send(400,json.dumps({'err':'Выберите один или два аккумулятора.'}).encode())
                         if k=='deal':
                             try:
+                                if any(new.get(field)!= (old or {}).get(field) for field in ('payoff','payoff_terms')):
+                                    raise Bad('Условия досрочного выкупа меняются отдельным действием.')
+                                if old and old.get('payoff_terms') and any(new.get(field)!=old.get(field) for field in ('start','total','down')):
+                                    raise Bad('Цена, дата выдачи и первоначальный взнос зафиксированы.')
+                                if old and old.get('payoff') and any(new.get(field)!=old.get(field) for field in ('paid','early','dpays','debt','schedule','n','type','pay','last','shift','bonuses','pen','pw','np','defer')):
+                                    raise Bad('История оплат зафиксирована после досрочного выкупа.')
                                 if not old:validate_new_deal(new,tod())
                                 elif new.get('tariff')!=old.get('tariff'):
                                     raise Bad('Тариф фиксируется при оформлении выкупа.')
