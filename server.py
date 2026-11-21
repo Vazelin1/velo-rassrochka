@@ -20,7 +20,7 @@ KINDS=('client','bike','deal','cfg','admin','qr','unk','bill','tch','reschedule'
 SRV=('qr','unk','bill','tch','reschedule','paymentreport','statementlink')
 PERMS=('pay','early','pen','clients','deals','bikes','reports')
 FINP={'deals','bikes','reports'}  # rights that let an administrator see prices, purchase costs and profit
-HID={'deal':('total','tax','acq','receipt','cost','disc','mk','extras','down','refund','down_fees','tariff'),'bike':('cost','exp','wo')}
+HID={'deal':('total','tax','acq','receipt','cost','disc','mk','extras','down','refund','down_fees','tariff','gift'),'bike':('cost','exp','wo')}
 PUBCFG=('id','dd','pen','dmin','dbd','multi_discount')
 BIKE_MODELS=('monster','u2','u2pro')
 BATTERY_COUNTS=(1,2)
@@ -30,6 +30,7 @@ def tariff_key(model,batteries):
 
 BIKE_TARIFF_KEYS={tariff_key(model,count) for model in BIKE_MODELS for count in BATTERY_COUNTS}
 WEEKLY_TERMS=(8,12,16,20,26)
+ADVANCES=(10000,20000,30000,40000,50000)
 LEGACY_WEEKLY_TERMS={str(weeks) for weeks in range(8,27)}
 WEEKLY_TERM_LIST=', '.join(map(str,WEEKLY_TERMS))
 CLIENT_DEFERRAL_LIMIT=4
@@ -285,6 +286,7 @@ def validate_backup(records,bindings):
             for field in ('pay','last'):amount(data.get(field))
             if not isinstance(data.get('paid'),dict):raise Bad(f'В копии повреждены оплаты выкупа {identifier}.')
             for field in ('dpays','early','bonuses','extras'):objects(data,field)
+            if 'gift' in data:data['gift']=validate_gift(data['gift'])
             for swap in objects(data,'swaps'):
                 require(swap.get('from'),'bike');valid_date(swap.get('date'))
                 if swap.get('to'):require(swap['to'],'bike')
@@ -327,6 +329,7 @@ def validate_backup(records,bindings):
             if data.get('ds') and not all(isinstance(x,list) and len(x)==2 for x in data['ds']):raise Bad('В копии повреждены скидки.')
             if 'tariffs' in data:validate_tariffs(data['tariffs'], restoring=True)
             if 'purchaseCosts' in data:validate_purchase_costs(data['purchaseCosts'])
+            if 'advanceDiscounts' in data:validate_advance_discounts(data['advanceDiscounts'])
             for field in ('pen','tax','dmin','dd','dbd','multi_discount','receipt','acq'):
                 if data.get(field) is not None:amount(data[field])
     seen=set()
@@ -449,7 +452,7 @@ def minpart(x):return money(math.ceil(minor(x['amt'])*max(50,cfgv('dmin',50))/10
 def whole(value,label='сумму'):
     try:
         number=float(value)
-    except (ValueError,TypeError):
+    except (ValueError,TypeError,OverflowError):
         raise Bad(f'Введите {label}.')
     if isinstance(value,bool) or not math.isfinite(number) or number!=int(number) or abs(number)>10000000:
         raise Bad(f'Введите {label} в целых рублях.')
@@ -484,6 +487,22 @@ def validate_purchase_costs(costs):
         raise Bad('Проверьте закупочные цены по комплектациям.')
     for key,value in costs.items():
         costs[key]=positive_amount(value)
+
+def validate_advance_discounts(discounts):
+    if not isinstance(discounts,dict) or not set(discounts).issubset(map(str,ADVANCES)):
+        raise Bad('Проверьте список скидок за первоначальный взнос.')
+    for key,value in discounts.items():
+        amount=whole(value,'скидку за первоначальный взнос')
+        if amount<0:raise Bad('Скидка не может быть отрицательной.')
+        discounts[key]=amount
+
+def validate_gift(gift):
+    if not isinstance(gift,dict):raise Bad('Проверьте данные подарка.')
+    name=gift.get('name','')
+    if not isinstance(name,str) or len(name)>160:raise Bad('Описание подарка должно быть не длиннее 160 символов.')
+    amount=gift.get('amount')
+    if isinstance(amount,bool):raise Bad('Укажите стоимость подарка.')
+    return {'name':name.strip(),'amount':0 if amount==0 else positive_amount(amount)}
 
 def validate_tariffs(tariffs, previous=None, *, restoring=False):
     if not isinstance(tariffs,dict) or any(key not in BIKE_TARIFF_KEYS for key in tariffs):
@@ -1480,8 +1499,11 @@ def bike_available(bike_id,deal_id):
 def validate_new_deal(d,t):
     start=received_date(d.get('start'),t)
     total=minor(positive_amount(d.get('total')))
-    down=minor(positive_amount(d['down'])) if d.get('down') not in (None,0) else 0
-    if down>total:raise Bad('Первоначальный взнос больше цены выкупа.')
+    advance=whole(d.get('down'),'первоначальный взнос')
+    if advance not in ADVANCES:raise Bad('Выберите первоначальный взнос из списка.')
+    down=advance*100
+    method=d.get('down_method')
+    if method not in ('наличные','СБП','перевод'):raise Bad('Выберите способ оплаты при выдаче.')
     weeks=d.get('n')
     if type(weeks) is not int or weeks not in WEEKLY_TERMS or d.get('type')!='w':
         raise Bad(f'Доступные сроки выкупа: {WEEKLY_TERM_LIST} недель.')
@@ -1495,39 +1517,36 @@ def validate_new_deal(d,t):
     if not valid_batteries(batteries):raise Bad('Укажите количество аккумуляторов в карточке велосипеда.')
     weekly=cfgv('tariffs',{}).get(tariff_key(model,batteries),{}).get(str(weeks))
     if weekly is None:raise Bad('Задайте недельный платёж для комплектации и срока в настройках.')
-    tariff={'model':model,'weeks':weeks,'weekly':weekly}
-    selected=d.get('tariff')
-    if not isinstance(selected,dict):raise Bad('Выберите тариф выкупа.')
-    if batteries==2 or 'batteries' in selected:
-        if not valid_batteries(selected.get('batteries')):raise Bad('Проверьте количество аккумуляторов.')
-        tariff['batteries']=batteries
-    if selected!=tariff:raise Bad('Комплектация или тариф изменились. Откройте оформление выкупа заново.')
-    extras=d.get('extras') or []
-    if not isinstance(extras,list) or not all(isinstance(extra,dict) for extra in extras):
-        raise Bad('Проверьте дополнительные позиции.')
-    if extras and 'batteries' in tariff:raise Bad('В тариф уже включены аккумуляторы из комплектации.')
-    additional=0
-    for extra in extras:
-        positive_amount(extra.get('cost'))
-        additional+=minor(positive_amount(extra.get('price')))
-    if total!=minor(weekly)*weeks+additional:raise Bad('Цена выкупа должна совпадать с тарифом и дополнительными позициями.')
-    d['tariff']=tariff
-    d['cost']=bike.get('cost',0)
-    if total==down:
+    discount=cfgv('advanceDiscounts',{}).get(str(advance),0)
+    tariff={'model':model,'batteries':batteries,'weeks':weeks,'weekly':weekly,'advanceDiscount':discount}
+    if d.get('tariff')!=tariff:raise Bad('Тариф или скидка изменились. Откройте оформление выкупа заново.')
+    if d.get('extras'):raise Bad('Комплектация уже входит в тариф. Подарки укажите отдельно.')
+    price=((minor(weekly)*weeks+50)//100-discount)*100
+    if price<down:raise Bad('Первоначальный взнос больше цены выкупа со скидкой.')
+    if total!=price:raise Bad('Цена выкупа должна совпадать с тарифом со скидкой.')
+    balance=price-down
+    regular=balance//(weeks*100)*100
+    last=balance-regular*(weeks-1)
+    if not balance:
         if d.get('paid') or d.get('pay')!=0 or d.get('last')!=0:raise Bad('Цена уже покрыта первоначальным взносом.')
-        if d.get('down_method') not in ('наличные','СБП','перевод'):raise Bad('Выберите способ оплаты.')
-        return
-    balance=total-down
-    regular=balance//weeks
-    if not regular:raise Bad('Остаток слишком мал для выбранного срока.')
-    payment=minor(positive_amount(d.get('pay')))
-    last=minor(positive_amount(d.get('last')))
-    if payment!=regular or last!=balance-regular*(weeks-1):raise Bad('Суммы взносов должны совпадать с расчётом по тарифу.')
-    paid=d.get('paid') or {};first=paid.get('1') if isinstance(paid,dict) else None
-    if not isinstance(first,dict) or len(paid)!=1 or first.get('date')!=start or first.get('pen',0)!=0 or first.get('part'):
-        raise Bad('Проверьте оплату первого взноса при оформлении.')
-    if minor(positive_amount(first.get('amt')))!=payment or first.get('method') not in ('наличные','СБП','перевод'):
-        raise Bad('Сумма и способ оплаты первого взноса должны совпадать с графиком.')
+    else:
+        if not regular:raise Bad('Остаток слишком мал для выбранного срока.')
+        if minor(positive_amount(d.get('pay')))!=regular or minor(positive_amount(d.get('last')))!=last:
+            raise Bad('Суммы взносов должны совпадать с расчётом по тарифу.')
+        paid=d.get('paid') or {};first=paid.get('1') if isinstance(paid,dict) else None
+        if not isinstance(first,dict) or len(paid)!=1 or first.get('date')!=start or first.get('pen',0)!=0 or first.get('part'):
+            raise Bad('Проверьте оплату первого взноса при оформлении.')
+        if minor(positive_amount(first.get('amt')))!=regular or first.get('method')!=method:
+            raise Bad('Сумма и способ оплаты первого взноса должны совпадать с графиком.')
+        first['amt']=money(regular)
+    d.update(tariff=tariff,cost=bike.get('cost',0),down=advance,total=money(price),pay=money(regular),last=money(last))
+    tax=cfgv('tax',7)
+    future_rates={'tax':tax if 0<=tax<=100 else 0,**fee_rates('СБП')}
+    issue_rates={**future_rates,**fee_rates(method)}
+    def charge(cents,rate):return int((Decimal(cents)*Decimal(str(rate))/100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+    for field,rate in future_rates.items():
+        cents=charge(down+regular,issue_rates[field])+charge(regular,rate)*(weeks-2)+charge(last,rate)
+        d[field]=money(cents)
 
 def close_pending_schedule(key,t,by):
     for request_id,request in docs_of('reschedule'):
@@ -2065,6 +2084,7 @@ class H(BaseHTTPRequestHandler):
                             try:
                                 if 'tariffs' in new:validate_tariffs(new['tariffs'],(old or {}).get('tariffs'))
                                 if 'purchaseCosts' in new:validate_purchase_costs(new['purchaseCosts'])
+                                if 'advanceDiscounts' in new:validate_advance_discounts(new['advanceDiscounts'])
                                 for field in ('multi_discount','receipt','acq','tax','pen'):
                                     if field in new and (not old or old.get(field)!=new[field]):
                                         value=float(new[field])
@@ -2089,6 +2109,8 @@ class H(BaseHTTPRequestHandler):
                                 if not old:validate_new_deal(new,tod())
                                 elif new.get('tariff')!=old.get('tariff'):
                                     raise Bad('Тариф фиксируется при оформлении выкупа.')
+                                if 'gift' in new and (not old or old.get('gift')!=new['gift']):
+                                    new['gift']=validate_gift(new['gift'])
                                 if new.get('pen') is not None and (not old or old.get('pen')!=new.get('pen')):
                                     rate=float(new['pen'])
                                     if not math.isfinite(rate) or not 0<=rate<=100:raise Bad('Неустойка должна быть от 0 до 100%.')
