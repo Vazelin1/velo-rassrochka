@@ -87,6 +87,7 @@ function deadline(d,row){
     return (d.defer||[]).reduce((date,g)=>g.k==row.k&&g.due==row.due&&g.until>date?g.until:date,row.due);
 }
 function unpaid(d,rows=sched(d)){
+    if(d.payoff)return [];
     return rows.filter(row=>!d.paid?.[row.k]).sort((a,b)=>deadline(d,a).localeCompare(deadline(d,b)));
 }
 const penalty=(a,days,r)=>Math.round(a*Math.max(0,r==null?0.9:r)/100*days);
@@ -105,7 +106,7 @@ function penaltyDetail(amount,limit,date,d){
     return {amount,limit,rate,start,days,total:penalty(amount,days,rate)};
 }
 /* Debt left after a partial payment of a period: {amt, due, pb, k}. Penalty is counted on the remainder after the due date (pb: date the penalty was last paid). */
-function dstat(d,T){const g=d&&d.debt;if(!g||!(g.amt>0))return null;const b=g.pb&&g.pb>g.due?g.pb:g.due,n=pdays(b,T,d),pen=penalty(g.amt,n,d.pen);return{amt:g.amt,due:g.due,k:g.k,days:n,pen,total:money(minor(g.amt)+minor(pen)),late:Math.max(0,diff(T,g.due)),over:T>g.due,base:b}}
+function dstat(d,T){const g=d&&d.debt;if(d?.payoff||!g||!(g.amt>0))return null;const b=g.pb&&g.pb>g.due?g.pb:g.due,n=pdays(b,T,d),pen=penalty(g.amt,n,d.pen);return{amt:g.amt,due:g.due,k:g.k,days:n,pen,total:money(minor(g.amt)+minor(pen)),late:Math.max(0,diff(T,g.due)),over:T>g.due,base:b}}
 
 function paymentQuote(d,options={},settings={},date=today()){
     const remaining=unpaid(d);
@@ -164,6 +165,7 @@ function paymentQuote(d,options={},settings={},date=today()){
 }
 
 function changeable(d,date,rows=sched(d)){
+    if(d.payoff)return [];
     return rows.filter(row=>!d.paid?.[row.k]&&row.due>=date&&deadline(d,row)==row.due);
 }
 function scheduleBounds(d,date=today(),anchor=null){
