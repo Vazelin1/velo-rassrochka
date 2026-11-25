@@ -190,7 +190,7 @@ def mine(cid):
         'dd':cf.get('dd',2),'defer_limit':CLIENT_DEFERRAL_LIMIT,'dmin':max(50,cf.get('dmin',50)),
         'dbd':cf.get('dbd',3),'qr':bool(tq()),'bills':bills,
         'ct':{'tg':safe_link(cf.get('ctg')),'mx':safe_link(cf.get('cmx')),'phone':safe_phone(cf.get('cphone'))},
-        'operator':{'name':PUBLIC_OPERATOR_SHORT,'inn':PUBLIC_INN,'ogrnip':PUBLIC_OGRNIP}
+        'city':PUBLIC_CITY
     }
 def adm_of(u):
     """The administrator whose Telegram ID is u: (id, data) or None."""
@@ -2973,7 +2973,6 @@ def migrate():
             if 'early' in d.get('perms',[]) and 'pen' not in d['perms']:d['perms']=[q for q in PERMS if q in d['perms']+['pen']];save(i,'admin',d)
         db.execute("insert into ntf values('mig:pen')");db.commit()
 PUBLIC_OPERATOR='Старчевский Максим Юрьевич'
-PUBLIC_OPERATOR_SHORT='Старчевский М.Ю.'
 PUBLIC_INN='781154545535'
 PUBLIC_OGRNIP='323784700210652'
 PUBLIC_PHONE='+7 921 752-10-54'
@@ -2987,11 +2986,13 @@ def privacy_paragraphs():
     )
     return text.strip().split('\n\n')
 
-def privacy_page():
-    body=''.join(
-        f'<h2>{escape(p[3:])}</h2>' if p.startswith('## ') else f'<p>{escape(p)}</p>'
+def privacy_body(heading):
+    return ''.join(
+        f'<{heading}>{escape(p[3:])}</{heading}>' if p.startswith('## ') else f'<p>{escape(p)}</p>'
         for p in privacy_paragraphs()
     )
+
+def privacy_page():
     return f'''<!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
@@ -3007,7 +3008,7 @@ def privacy_page():
     h2 {{font-size:1.1rem; line-height:1.35; margin:1.45em 0 .45em}}
     p {{margin:.55em 0}}
 </style>
-<main><header><p>Вольт Вояж</p><h1>{PRIVACY_TITLE}</h1></header>{body}</main>
+<main><header><p>Вольт Вояж</p><h1>{PRIVACY_TITLE}</h1></header>{privacy_body('h2')}</main>
 </html>'''
 
 PUBLIC_MENU='vv:'
@@ -3140,7 +3141,8 @@ def bank_terms_page(settings):
         tariffs=''.join(tariffs) or '<p>Актуальные тарифы и наличие уточняйте по телефону.</p>',
         payment=sections['payment'],returns=sections['return'],city=escape(PUBLIC_CITY),
         operator=escape(PUBLIC_OPERATOR),inn=escape(PUBLIC_INN),ogrnip=escape(PUBLIC_OGRNIP),
-        phone=escape(PUBLIC_PHONE),phone_href=safe_phone(PUBLIC_PHONE),privacy_title=escape(PRIVACY_TITLE)
+        phone=escape(PUBLIC_PHONE),phone_href=safe_phone(PUBLIC_PHONE),
+        privacy_title=escape(PRIVACY_TITLE),privacy_body=privacy_body('h3')
     )
 
 def public_bot_update(update):
