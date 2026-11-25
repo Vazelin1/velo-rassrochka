@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Условия аренды с правом выкупа · Вольт Вояж</title>
+  <style>
+    :root {
+      color-scheme: light;
+      color: #19312b;
+      background: #f1f3ee;
+      font: 16px/1.55 system-ui, sans-serif;
+    }
+    body { margin: 0; }
+    main { max-width: 62rem; margin: auto; padding: clamp(12px, 4vw, 42px); overflow-wrap: anywhere; }
+    header, section { border-radius: 20px; padding: clamp(20px, 4vw, 38px); }
+    header { background: #173f35; color: #fff; }
+    header p { max-width: 48ch; color: #e1eee7; }
+    .brand { font-weight: 700; }
+    h1 { max-width: 22ch; margin: .35em 0; font-size: clamp(1.75rem, 4.5vw, 3rem); line-height: 1.12; }
+    h2 { margin: 0 0 .7em; font-size: 1.35rem; line-height: 1.25; }
+    h3 { margin: 0 0 .5em; font-size: 1rem; }
+    p { margin: 0 0 .85em; }
+    p:last-child { margin-bottom: 0; }
+    a { color: #185440; text-underline-offset: .2em; }
+    a:focus-visible { outline: 2px solid #185440; outline-offset: 4px; }
+    nav { display: flex; flex-wrap: wrap; column-gap: 1.3rem; padding: 10px 0; }
+    nav a { display: inline-flex; align-items: center; min-height: 44px; font-weight: 600; }
+    section { background: #fff; border: 1px solid #dce5dd; margin-bottom: 12px; }
+    .tariffs { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); }
+    article { padding: 14px 16px; border: 1px solid #dce5dd; border-radius: 12px; }
+    ul { margin: 0; padding-left: 1.2em; }
+    li + li { margin-top: .45em; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: .4em 1em; margin: 0 0 1em; }
+    dt { color: #416055; }
+    dd { margin: 0; font-weight: 600; }
+    .policy summary {
+      display: flex; align-items: center; justify-content: space-between; gap: .75rem;
+      min-height: 44px; padding: .55rem .9rem; border: 1px solid #dce5dd; border-radius: 12px;
+      color: #185440; background: #f1f3ee; font-weight: 650; cursor: pointer; list-style: none;
+    }
+    .policy summary::-webkit-details-marker { display: none; }
+    .policy summary::after { content: ''; width: .5rem; height: .5rem; flex: none; margin-right: .15rem; border: solid currentColor; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+    .policy[open] summary::after { transform: rotate(225deg); }
+    .policy summary:focus-visible { outline: 2px solid #185440; outline-offset: 4px; }
+    .policy div { padding-top: 1rem; }
+    .policy h3:not(:first-child) { margin-top: 1.15em; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="brand">Вольт Вояж</p>
+      <h1>Аренда электровелосипедов с правом выкупа</h1>
+      <p>$city. Договор подписывается при выдаче электровелосипеда по предварительной записи.</p>
+    </header>
+    <nav aria-label="Условия аренды">
+      <a href="#tariffs">Тарифы</a>
+      <a href="#payment">Оплата</a>
+      <a href="#return">Выдача и возврат</a>
+      <a href="#details">Реквизиты</a>
+    </nav>
+    <section id="tariffs">
+      <h2>Тарифы</h2>
+      <div class="tariffs">$tariffs</div>
+    </section>
+    <section id="payment">
+      <h2>Как проходит оплата</h2>
+      $payment
+    </section>
+    <section id="return">
+      <h2>Выдача и возврат</h2>
+      $returns
+    </section>
+    <section id="details">
+      <h2>Реквизиты и контакты</h2>
+      <dl>
+        <dt>ИП</dt><dd>$operator</dd>
+        <dt>ИНН</dt><dd>$inn</dd>
+        <dt>ОГРНИП</dt><dd>$ogrnip</dd>
+        <dt>Город</dt><dd>$city</dd>
+        <dt>Телефон</dt><dd><a href="tel:$phone_href">$phone</a></dd>
+      </dl>
+      <details class="policy" id="privacy-policy">
+        <summary>$privacy_title</summary>
+        <div>
+          $privacy_body
+          <p><a href="/privacy">Открыть политику отдельной страницей</a></p>
+        </div>
+      </details>
+    </section>
+  </main>
+</body>
+</html>
