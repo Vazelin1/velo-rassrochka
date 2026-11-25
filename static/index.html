@@ -183,10 +183,7 @@ nav .bar{pointer-events:auto;display:flex;width:100%;max-width:520px;background:
 .expense-row .tx b{white-space:normal;overflow-wrap:anywhere}
 .privacy-link{margin:16px 20px 8px;text-align:center;font-size:13px}
 .privacy-link a{color:var(--pine);text-underline-offset:3px}
-.client-requisites{margin:20px 16px 0;padding:14px 16px;border-top:1px solid var(--ln);color:var(--mu);font-size:13px;text-align:center;overflow-wrap:anywhere}
-.client-requisites strong{color:var(--ink)}
-.client-requisites p{margin:4px 0}
-.client-requisites .privacy-link{margin:12px 0 0}
+.client-city{margin:20px 16px 0;padding:14px 16px;border-top:1px solid var(--ln);color:var(--mu);font-size:13px;text-align:center}
 .btn.client-calculator{white-space:normal}
 .battery-picker{margin:14px 0}
 .battery-picker>span{display:block;margin-bottom:8px;color:var(--mu);font-size:14px}
@@ -2553,6 +2550,7 @@ async function submitPaymentReport(id){
         <label class=fld><span>Номер операции</span><input data-reference maxlength=180></label>
         <label class=fld><span>Квитанция (PDF, JPG или PNG, до 1,5 МБ)</span><input data-attachment type=file accept=".pdf,.jpg,.jpeg,.png"></label>
         <label class=fld><span>Комментарий</span><textarea data-note rows=2 maxlength=1000></textarea></label>
+        ${privacyLink()}
         <button class="btn blk" data-send>Отправить</button><button class="btn sec blk" data-close>Отмена</button>`,(root,done)=>{
         const get=s=>root.querySelector(s),button=get('[data-send]');get('[data-close]').onclick=()=>done();
         button.onclick=async()=>{button.disabled=true;try{
@@ -2715,15 +2713,7 @@ async function defAsk(id){
 }
 async function claim(tok){try{await api('/api/claim',{tok,phone:v('#ph')});location.reload()}catch(e){uiAlert('Проверьте номер телефона и ссылку. Номер должен совпадать с тем, который вы называли при оформлении выкупа.','Не удалось войти')}}
 const privacyLink=()=>'<p class=privacy-link><a href="/privacy" target="_blank" rel="noopener noreferrer">Политика обработки персональных данных</a></p>';
-function clientRequisites(){
-    const operator=ME.operator;
-    if(!operator)return privacyLink();
-    return `<footer class="client-requisites" aria-label="Реквизиты ИП">
-        <strong>ИП ${esc(operator.name)}</strong>
-        <p>ИНН ${esc(operator.inn)} · ОГРНИП ${esc(operator.ogrnip)}</p>
-        ${privacyLink()}
-    </footer>`;
-}
+const clientCity=()=>ME.city?`<footer class="client-city">${esc(ME.city)}</footer>`:'';
 function clientUI(){
     $('#nav').style.display='none';
     if(ME.role=='new'){
@@ -2746,10 +2736,10 @@ const startParam=()=>{const u=T.initDataUnsafe||{};if(u.start_param)return u.sta
 let selectedClientDeal=null;
 const currentClientDeal=()=>ME.deals.find(x=>x.status=='active'&&x.id==selectedClientDeal)||ME.deals.find(x=>x.status=='active')||ME.deals[0];
 function selectClientDeal(id){selectedClientDeal=id;crender()}
-function crender(){const d=currentClientDeal();if(!d){$('#app').innerHTML=`<div class=center>${ic('bike','l')}<h1>Договоров пока нет</h1><p>После оформления договор появится здесь.</p>${contact()}</div>`+clientRequisites();return}
+function crender(){const d=currentClientDeal();if(!d){$('#app').innerHTML=`<div class=center>${ic('bike','l')}<h1>Договоров пока нет</h1><p>После оформления договор появится здесь.</p>${contact()}</div>`+clientCity();return}
 const el=$('#app'),active=ME.deals.filter(x=>x.status=='active'),screen=CV[CV.length-1];
 const select=screen=='main'&&active.length>1?`<label class="card fld"><span>Выберите договор</span><select onchange="selectClientDeal(this.value)">${active.map(x=>`<option value="${x.id}" ${x.id==d.id?'selected':''}>${esc(x.bike)}${x.contract?' · договор '+esc(x.contract):''}</option>`).join('')}</select></label>`:'';
-el.innerHTML=select+({main:cmain,sch:csch,hist:chist})[screen](d)+(screen==='main'?clientRequisites():'');el.className='';if(navDir){void el.offsetWidth;el.className=navDir}navDir='';scrollTo(0,0);chrome();completionPopup(d)}
+el.innerHTML=select+({main:cmain,sch:csch,hist:chist})[screen](d)+(screen==='main'?clientCity():'');el.className='';if(navDir){void el.offsetWidth;el.className=navDir}navDir='';scrollTo(0,0);chrome();completionPopup(d)}
 const DEBT=(g,d)=>`<div class="cn hq${g.over?' over':''}">${qb('debt')}<div class=tag>${ic('alert','s')}${g.over?`Долг просрочен на ${g.late} ${dayWord(g.late)}`:`Долг по периоду ${g.k}`}</div><div class=big>${m(g.total)}</div><div style="font-size:18px;font-weight:650;margin-top:2px">${g.pen?`${m(g.amt)} + неустойка ${m(g.pen)}`:g.over?'неустойка сейчас не начисляется':`внести до ${fmt(g.due)}`}</div><div class=mu style="margin-top:4px">${g.over?`Срок без неустойки был до ${fmt(g.due)}`:'До этой даты неустойка не начисляется'}</div>${g.over?`<button class=un onclick="penaltySheet('${d.id}','debt')">Расчёт неустойки</button>`:''}${ME.qr?`<div class=cq>${cQRb('debt',d,0,'',`Доплатить по QR · ${m(g.total)}`)}</div>`:''}</div>`;
 const contact=(withHistory=false)=>{const c=ME.ct||{};
     const history=withHistory?`<div class=tw><button class=tl onclick="cgo('hist')"><span class=gl>${ic('clock')}</span><span>История оплат</span>${ic('right')}</button>${qb('hist')}</div>`:'';
