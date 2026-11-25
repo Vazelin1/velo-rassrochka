@@ -25,7 +25,7 @@ SRV=('qr','unk','bill','tch','reschedule','paymentreport','statementlink')
 PERMS=('pay','early','pen','clients','deals','bikes','reports')
 FINP={'deals','bikes','reports'}  # rights that let an administrator see prices, purchase costs and profit
 HID={'deal':('total','tax','acq','receipt','cost','disc','mk','extras','down','down_fees','tariff','gift','payoff_terms'),'bike':('cost','exp','wo')}
-PUBCFG=('id','dd','pen','dmin','dbd')
+PUBCFG=('id','pen','dmin')
 LEGACY_MODEL_NAMES={'monster':'Монстр','u2':'U2','u2pro':'U2 Pro'}
 BIKE_MODELS=tuple(LEGACY_MODEL_NAMES)
 BATTERY_COUNTS=(1,2)
@@ -36,12 +36,14 @@ def tariff_key(model,batteries):
 BIKE_TARIFF_KEYS={tariff_key(model,count) for model in BIKE_MODELS for count in BATTERY_COUNTS}
 WEEKLY_TERMS=(8,12,16,20,26)
 RENTAL_WEEKS=(20,26)
-DEFAULT_LATE_FEE=350
-DEFAULT_LATE_FEE_DAY=3
+LATE_FEE_AMOUNT=350
+LATE_FEE_DAY=3
+UNPAID_PENALTY_DAY=4
+PARTIAL_GRACE_DAYS=4
+CHARGE_RULES_VERSION=2
 ADVANCES=(10000,20000,30000,40000,50000)
 LEGACY_WEEKLY_TERMS={str(weeks) for weeks in range(8,27)}
 WEEKLY_TERM_LIST=', '.join(map(str,WEEKLY_TERMS))
-CLIENT_DEFERRAL_LIMIT=4
 CLIENT_PAYOFF_MIN_PERIODS=4
 CLIENT_PAYMENT_MAX_PERIODS=4
 HANDOVER_CHECKS=('documents_signed','tracker_removed','spare_keys_given','bike_documents_given')
@@ -97,10 +99,14 @@ def save(i,k,d):db.execute('insert or replace into docs values(?,?,?)',(i,k,json
 def D(s):return dt.date.fromisoformat(s)
 def digits(p):return re.sub(r'\D','',p or '')[-10:]
 def payment_deadline(d, installment):
+    """Keep deadlines already granted before the deferral feature was removed."""
     return max([installment['due']] + [
         grant['until'] for grant in d.get('defer') or []
         if grant.get('k') == installment['k'] and grant.get('due') == installment['due'] and grant.get('until')
     ])
+
+def partial_payment_deadline(d, installment):
+    return add(payment_deadline(d,installment),PARTIAL_GRACE_DAYS)
 
 def unpaid_installments(d, schedule=None):
     if d.get('payoff'):return []
@@ -187,10 +193,10 @@ def mine(cid):
     reports = [{**payment_report_summary(z), 'id': i} for i,z in docs_of('paymentreport') if z.get('deal') in ids and z.get('client')==cid]
     return {
         'role':'client','name':c.get('name',''),'deals':out,'requests':requests,'paymentreports':reports,
-        'dd':cf.get('dd',2),'defer_limit':CLIENT_DEFERRAL_LIMIT,'dmin':max(50,cf.get('dmin',50)),
-        'dbd':cf.get('dbd',3),'qr':bool(tq()),'bills':bills,
+        'dmin':max(50,cf.get('dmin',50)),'qr':bool(tq()),'bills':bills,
         'ct':{'tg':safe_link(cf.get('ctg')),'mx':safe_link(cf.get('cmx')),'phone':safe_phone(cf.get('cphone'))},
-        'city':PUBLIC_CITY
+        'city':PUBLIC_CITY,
+        'operator':{'name':PUBLIC_OPERATOR_SHORT,'inn':PUBLIC_INN,'ogrnip':PUBLIC_OGRNIP}
     }
 def adm_of(u):
     """The administrator whose Telegram ID is u: (id, data) or None."""
@@ -230,7 +236,7 @@ def vw(k,d,f,owner=False):
 def okkey(P,k,x,m):
     """May an administrator with rights P change field x of a document of kind k?"""
     if k=='deal':
-        n={'paid':'pay','debt':'pay','dpays':'pay','early':'early','shift':'early','defer':'early','pw':'pen','np':'pen'}.get(x)
+        n={'paid':'pay','debt':'pay','dpays':'pay','early':'early','shift':'early','pw':'pen','np':'pen'}.get(x)
         if n:return n in P
         if x in('bike','swaps'):return 'bikes' in P
         if x in('status','closed'):return ('bikes' if m.get('status')=='lost' else 'deals') in P
@@ -382,7 +388,6 @@ def validate_backup(records,bindings):
             if 'rentalBrands' in data or 'rentalModels' in data:validate_rental_catalog(data)
             for field in ('pen','tax','dmin','dd','dbd','multi_discount','receipt','acq'):
                 if data.get(field) is not None:amount(data[field])
-            validate_late_fee_settings(data)
     seen=set()
     for tg_id,client in bindings:
         if type(tg_id) is not int or tg_id<=0 or tg_id in seen:raise Bad('В копии повреждены привязки Telegram.')
@@ -492,14 +497,22 @@ def pdays(b,T,d):
 def dstat(d,T):
     g=d.get('debt')
     if d.get('payoff') or not g or not g.get('amt',0)>0:return None
-    if d.get('lease') and d['paid'][str(g['k'])]['date']>T:return None
-    b=g['pb'] if g.get('pb') and g['pb']>g['due'] else g['due'];n=pdays(b,T,d);pe=penalty(g['amt'],n,d.get('pen'))
+    payment=(d.get('paid') or {}).get(str(g['k'])) or {}
+    first=payment['date'] if payment.get('part') else ''
+    if first>T:return None
+    # The first payment already covered all charges through its own date.
+    b=max(g['due'],g.get('pb') or '',first);n=pdays(b,T,d);pe=penalty(g['amt'],n,d.get('pen'))
     return {'amt':g['amt'],'due':g['due'],'k':g['k'],'days':n,'pen':pe,'total':money(minor(g['amt'])+minor(pe)),'late':max(0,diff(T,g['due'])),'over':T>g['due'],'base':b}
 
-def installment_charges(d,period,date):
+def installment_charges(d,period,date,*,legacy_rental_grace=None):
     limit=payment_deadline(d,period)
-    days=pdays(limit,date,d)
-    late=d.get('late_fee') or {}
+    if legacy_rental_grace is None:
+        grace=UNPAID_PENALTY_DAY-1
+        late={'amount':LATE_FEE_AMOUNT,'day':LATE_FEE_DAY}
+    else:
+        grace=legacy_rental_grace if d.get('lease') else 0
+        late=d.get('late_fee') or {}
+    days=pdays(add(limit,grace),date,d)
     fine=0
     if late.get('amount'):
         charged_on=add(limit,late['day'])
@@ -508,10 +521,10 @@ def installment_charges(d,period,date):
         if written_off<charged_on<=date and not paused:fine=late['amount']
     return {'days':days,'pen':penalty(period['amt'],days,d.get('pen'))+fine,'fine':fine}
 
-def info(d,t=None):
+def info(d,t=None,*,legacy_rental_grace=None):
     t=t or tod();sc=sched(d);un=unpaid_installments(d,sc);od=[x for x in un if payment_deadline(d,x)<t];ods=[]
     for y in od:
-        ods.append({**y,**installment_charges(d,y,t)})
+        ods.append({**y,**installment_charges(d,y,t,legacy_rental_grace=legacy_rental_grace)})
     pe=sum(y['pen'] for y in ods);g=dstat(d,t)
     return {'sc':sc,'un':un,'x':un[0] if un else None,'od':od,'ods':ods,'pen':pe,'g':g,'owe':sum(y['amt'] for y in od)+pe,
             'done':bool(d.get('payoff')) if d.get('lease') else not un and not g}
@@ -557,11 +570,6 @@ def late_fee_record(amount,day):
     day=whole(day,'день штрафа')
     if amount<0 or not 1<=day<=365:raise Bad('Укажите сумму штрафа от 0 ₽ и день просрочки от 1 до 365.')
     return {'amount':amount,'day':day}
-
-def validate_late_fee_settings(settings):
-    terms=late_fee_record(settings.get('late_fee_amount',DEFAULT_LATE_FEE),settings.get('late_fee_day',DEFAULT_LATE_FEE_DAY))
-    for field,value in (('late_fee_amount',terms['amount']),('late_fee_day',terms['day'])):
-        if field in settings:settings[field]=value
 
 def valid_batteries(count):
     return type(count) is int and count in BATTERY_COUNTS
@@ -718,7 +726,7 @@ def rental_credit(d,date):
     paid=sum(rental_paid_amounts(d,date).values())
     return {'rent_paid':money(paid),'credited':money(min(paid,minor(d['lease']['price'])))}
 
-def rental_payoff_quote(d,date):
+def rental_payoff_quote(d,date,*,legacy_rental_grace=None):
     if d.get('payoff') or d.get('status')!='active' or diff(date,d['start'])<7*CLIENT_PAYOFF_MIN_PERIODS:return None
     paid=rental_paid_amounts(d,date);price=d['lease']['price'];weekly=minor(d['lease']['weekly'])
     if any(paid.get(k,0)!=weekly for k in range(1,CLIENT_PAYOFF_MIN_PERIODS+1)) or any(
@@ -726,7 +734,7 @@ def rental_payoff_quote(d,date):
     ):return None
     credit=rental_credit(d,date);principal=money(minor(price)-minor(credit['credited']))
     # Only accrued rent penalties enter the calculation. Future rents end at buyout.
-    installments=info(d,date)
+    installments=info(d,date,legacy_rental_grace=legacy_rental_grace)
     pe=installments['pen']+(installments['g'] or {}).get('pen',0)
     fine=sum(row['fine'] for row in installments['ods'])
     return {**credit,'date':date,'price':price,'paid':credit['credited'],'principal':principal,'saved':0,
@@ -768,19 +776,30 @@ def validate_payoff_record(d):
     if not isinstance(record,dict) or not (d.get('payoff_terms') or d.get('lease')):
         raise Bad('В копии повреждена запись о досрочном выкупе.')
     date=valid_date(record.get('date'))
-    quote=early_buyout_quote({**d,'status':'active','payoff':None},date)
-    if not quote or record.get('fine',0)!=quote.get('fine',0) or any(record.get(key)!=quote[q] for key,q in (
-        ('amt','principal'),('pen','pen'),('saved','saved'),('price','price')
-    )) or (quote['total']>0 and record.get('method') not in PAYMENT_METHODS) or (d.get('lease') and any(
-        record.get(key)!=quote[key] for key in ('credited','rent_paid')
-    )):
-        raise Bad('В копии не сходится сумма досрочного выкупа.')
+    version=record.get('charge_rules_version')
+    if version==CHARGE_RULES_VERSION:
+        policies=(None,)
+    elif version is None:
+        # Earlier versions of rental payments used either zero or two grace days.
+        policies=(0,2) if d.get('lease') else (0,)
+    else:
+        raise Bad('В копии неизвестные правила расчёта выкупа.')
+    fields=[('amt','principal'),('pen','pen'),('saved','saved'),('price','price')]
+    if d.get('lease'):fields.extend((key,key) for key in ('credited','rent_paid'))
+    active_deal={**d,'status':'active','payoff':None}
+    for grace in policies:
+        quote=early_buyout_quote(active_deal,date,legacy_rental_grace=grace)
+        if (quote and record.get('fine',0)==quote.get('fine',0)
+            and all(record.get(key)==quote[q] for key,q in fields)
+            and (quote['total']==0 or record.get('method') in PAYMENT_METHODS)):
+            return
+    raise Bad('В копии не сходится сумма досрочного выкупа.')
 
-def early_buyout_quote(d,date,*,client=False):
-    if d.get('lease'):return rental_payoff_quote(d,date)
+def early_buyout_quote(d,date,*,client=False,legacy_rental_grace=None):
+    if d.get('lease'):return rental_payoff_quote(d,date,legacy_rental_grace=legacy_rental_grace)
     terms=d.get('payoff_terms')
     if not terms or d.get('payoff') or d.get('status')!='active' or date<d['start']:return None
-    installments=info(d,date)
+    installments=info(d,date,legacy_rental_grace=legacy_rental_grace)
     if installments['done']:return None
     debt=installments['g'] or {}
     if client:
@@ -811,15 +830,17 @@ def early_buyout_quote(d,date,*,client=False):
     principal=max(0,target-paid);saved=balance-principal
     if saved<=0:return None
     pen=minor(installments['pen']+debt.get('pen',0))
+    fine=sum(row['fine'] for row in installments['ods'])
     return {'date':date,'price':money(paid+principal),'paid':money(paid),'principal':money(principal),
-            'saved':money(saved),'pen':money(pen),'total':money(principal+pen),
+            'saved':money(saved),'pen':money(pen),**({'fine':fine} if fine else {}),'total':money(principal+pen),
             'terms':[{**point,'until':add(d['start'],point['weeks']*7-1)} for point in terms],
             'version':d.get('_v',0)}
 
 def record_early_buyout(d,quote,method,qr=None,fees=None):
     d['payoff']={'date':quote['date'],'amt':quote['principal'],'pen':quote['pen'],
                  'saved':quote['saved'],'price':quote['price'],'method':method,'source':qr or nid(),
-                 'fees':fees or fee_rates(method),**({'qr':qr} if qr else {})}
+                 'fees':fees or fee_rates(method),'charge_rules_version':CHARGE_RULES_VERSION,
+                 **({'qr':qr} if qr else {})}
     if d.get('lease'):d['payoff'].update({key:quote[key] for key in ('credited','rent_paid')})
     if quote.get('fine'):d['payoff']['fine']=quote['fine']
 
@@ -833,12 +854,11 @@ def payment_quote(d,options,t,settings=None,*,client=False,legacy_discount=False
     mode=options.get('mode','periods')
     if mode=='part':
         if dstat(d,t):raise Bad('Сначала погасите остаток предыдущего платежа.')
-        x=unpaid[0];grace=int(settings.get('dbd',3))
+        x=unpaid[0]
         if d.get('lease'):
             amount=money(minor(x['amt'])//2)
             if 'amount' in options and positive_amount(options['amount'])!=amount:
                 raise Bad(f'Первая часть составляет 50% платы за период, {rub(amount)}.')
-            grace=max(1,grace)
         else:
             amount=whole(options.get('amount'));mn=math.ceil(x['amt']*minimum/100);mx=math.ceil(x['amt'])-1
             if mn>mx:raise Bad('Этот взнос доступен только целиком.')
@@ -846,7 +866,8 @@ def payment_quote(d,options,t,settings=None,*,client=False,legacy_discount=False
         charges=installment_charges(d,x,t);pe=charges['pen'];fine=charges['fine']
         return {'mode':mode,'date':t,'count':1,'items':[{**x,'amt':amount,'pen':pe,**({'fine':fine} if fine else {})}],
                 'principal':amount,'pen':pe,**({'fine':fine} if fine else {}),'total':money(minor(amount)+minor(pe)),
-                'bonus':0,'rate':0,'reductions':[],'rest':money(minor(x['amt'])-minor(amount)),'debtDue':add(t,grace)}
+                'bonus':0,'rate':0,'reductions':[],'rest':money(minor(x['amt'])-minor(amount)),
+                'debtDue':partial_payment_deadline(d,x)}
     if mode!='periods':raise Bad('Выберите способ оплаты.')
     count=whole(options.get('count',1),'количество платежей')
     if client and count>CLIENT_PAYMENT_MAX_PERIODS:raise Bad('За один раз можно оплатить до четырёх периодов.')
@@ -969,7 +990,8 @@ def apply_payment(d,quote,method,qr=None,fees=None):
             row_['amt']=money(minor(row_['amt'])-amount)
             changes.append({'k':row_['k'],'due':row_['due'],'amt':money(amount)})
     for x in quote['items']:
-        put_paid(d,x['k'],quote['date'],x['amt'],x['pen'],method,qr,quote['mode']=='part',source=qr or group,fees=fees)
+        put_paid(d,x['k'],quote['date'],x['amt'],x['pen'],method,qr,quote['mode']=='part',source=qr or group,fees=fees,
+                 fine=x.get('fine',0))
         d['paid'][str(x['k'])].update(group=group,due=x['due'],batch_count=quote['count'])
     if quote['rest']:
         d['debt']={'k':quote['items'][0]['k'],'amt':quote['rest'],'due':quote['debtDue']}
@@ -1104,13 +1126,15 @@ def plan_period(d,A,t):
                 'rest':quote['rest'],'left':0,'debtDue':quote.get('debtDue')}
     I=info(d,t);x=I['x']
     if d.get('status')!='active' or not x:return 'Нечего оплачивать.'
-    pen=penalty(x['amt'],pdays(payment_deadline(d,x),t,d),d.get('pen'))
+    charges=installment_charges(d,x,t)
+    pen,fine=charges['pen'],charges['fine']
     amount=minor(A);due=minor(x['amt']);principal=amount-minor(pen)
-    if principal>=due:return {'k':x['k'],'pen':pen,'pay':x['amt'],'rest':0,'left':money(principal-due)}
+    if principal>=due:return {'k':x['k'],'pen':pen,'fine':fine,'pay':x['amt'],'rest':0,'left':money(principal-due)}
     if I['g']:return 'Пока не закрыт долг, период можно оплатить только целиком.'
     mn=minpart(x)
     if principal<minor(mn):return f'Сумма за период должна быть не меньше {rub(mn+pen)}.'
-    return {'k':x['k'],'pen':pen,'pay':money(principal),'rest':money(due-principal),'left':0}
+    return {'k':x['k'],'pen':pen,'fine':fine,'pay':money(principal),'rest':money(due-principal),'left':0,
+            'debtDue':partial_payment_deadline(d,x)}
 def put_paid(d,k,t,amt,pen,method,qr=None,part=False,source=None,fees=None,*,fine=0):
     due_=next((x['due'] for x in sched(d) if x['k']==k),None)
     p={'date':t,'amt':amt,'pen':pen,'method':method,'source':source or qr or nid(),'fees':fees or fee_rates(method)}
@@ -1121,7 +1145,7 @@ def put_paid(d,k,t,amt,pen,method,qr=None,part=False,source=None,fees=None,*,fin
     d.setdefault('paid',{})[str(k)]=p
 def apply_plan(d,p,t,method,qr=None,fees=None,source=None):
     put_paid(d,p['k'],t,p['pay'],p['pen'],method,qr,p['rest']>0,fees=fees,source=source,fine=p.get('fine',0))
-    if p['rest']>0:d['debt']={'k':p['k'],'amt':p['rest'],'due':p.get('debtDue') or add(t,int(cfgv('dbd',3)))}
+    if p['rest']>0:d['debt']={'k':p['k'],'amt':p['rest'],'due':p['debtDue']}
     return p['left']
 def apply_debt(d,A,t,method,qr=None,source=None,fees=None):
     """Money for the open debt: the penalty first, then the remainder. Returns what is left over."""
@@ -1480,7 +1504,7 @@ def qr_amount(d,kind_,t,bill=None,options=None,settings=None,*,client=False):
         return z['amt'],z['pen'],z['ks'],z
     if kind_=='selection':
         z=payment_quote(d,options or {},t,settings,client=client)
-        if d.get('lease') and 'preview' in (options or {}):
+        if 'preview' in (options or {}):
             preview={'version':d.get('_v',0),'date':t,'total':z['total']}
             if z.get('debtDue'):preview['debtDue']=z['debtDue']
             if options['preview']!=preview:raise Bad('График оплаты обновился. Откройте расчёт заново.')
@@ -1500,12 +1524,13 @@ def qr_amount(d,kind_,t,bill=None,options=None,settings=None,*,client=False):
         if bill['kind']=='period':
             p=plan_period(d,bill['amt'],t)
             if isinstance(p,str):raise Bad(p)
+            return bill['amt'],p['pen'],None,p
         else:
             debt=q_debt(d,t)
             if not debt:raise Bad('Долга нет.')
             if d.get('lease') and minor(bill['amt'])!=minor(debt['amt']):
                 raise Bad('Сумма доплаты изменилась. Свяжитесь с владельцем.')
-        return bill['amt'],0,None,None
+            return bill['amt'],debt['pen'],None,None
     raise Bad('Неверный запрос.')
 def qr_request(u,cl,b):
     with QR_LOCKS[hash(str(b.get('deal') or ''))%len(QR_LOCKS)]:
@@ -1526,7 +1551,7 @@ def register_qr(u,cl,b):
         if bill and bill.get('deal')!=i:bill=None
         options=b.get('options') or {}
         if not isinstance(options,dict):raise Bad('Выберите способ оплаты.')
-        settings={key:cfgv(key,default) for key,default in (('dmin',50),('dbd',3))}
+        settings={'dmin':cfgv('dmin',50)}
         before=fingerprint(d)
         amt,pe,ks,quote=qr_amount(d,k,t,bill,options,settings,client=cl)
         for j,q in docs_of('qr'):
@@ -1729,7 +1754,9 @@ def owner_act(p,b,ro,x,P):
             else:left=apply_money(d2,b['kind'],z['amt'],date,method,z.get('qr'),fees=fees,source=source)
             parts=[payment for kind,key,payment in receipt_parts(d2) if receipt_part(d,kind,key)!=payment and payment.get('source')==source]
             debt=dstat(d2,date) or {}
+            fine=sum(p.get('fine',0) for p in parts)
             plan={'version':d.get('_v',0),'date':date,'pen':money(sum(minor(p.get('pen') or 0) for p in parts)),
+                  **({'fine':fine} if fine else {}),
                   'allocated':money(minor(z['amt'])-minor(left)),'surplus':left,'debt':debt.get('amt',0),'debtDue':debt.get('due')}
             if b['do']=='preview':return plan
             check_version(d,b)
@@ -1792,7 +1819,9 @@ def statement_allocation(d,options,date,operation):
             if p.get('source')==source:
                 p['group']=source;items.append(p)
         total=money(minor(received)-minor(left));pen=money(sum(minor(p.get('pen') or 0) for p in items))
-        quote={'mode':mode,'date':date,'principal':money(minor(total)-minor(pen)),'pen':pen,'total':total,'bonus':0}
+        fine=sum(p.get('fine',0) for p in items)
+        quote={'mode':mode,'date':date,'principal':money(minor(total)-minor(pen)),'pen':pen,
+               **({'fine':fine} if fine else {}),'total':total,'bonus':0}
     else:
         quote=payment_quote(d,options,date)
         if minor(received)<minor(quote['total']):raise Bad('Поступление меньше выбранных взносов. Выберите меньше взносов или оплату ближайшего взноса фактической суммой.')
@@ -1809,43 +1838,6 @@ def statement_allocation(d,options,date,operation):
 
 def check_version(d,b):
     if b.get('version')!=d.get('_v',0):raise Bad('Данные изменились. Обновите экран и проверьте расчёт ещё раз.')
-
-def grant_deferral(b, ro, x, t, by):
-    key,d = action_deal({'deal': b.get('id') or b.get('deal')},ro,x,permission='early',allow_client=True)
-    I = info(d,t)
-    if d.get('status') != 'active' or not I['un']:
-        raise Bad('Отсрочка недоступна.')
-    if ro == 'client':
-        if sum(g.get('by')=='client' for g in d.get('defer') or [])>=CLIENT_DEFERRAL_LIMIT:
-            raise Bad('Вы использовали все отсрочки по этому выкупу.')
-        if 'version' in b:check_version(d,b)
-        if d.get('lease') and I['g']:raise Bad('Сначала доплатите остаток ближайшего периода.')
-        if I['od'] or (I['g'] or {}).get('over'):
-            raise Bad('Отсрочка доступна до начала просрочки.')
-        installment = I['x']
-        days = whole(cfgv('dd',2),'срок отсрочки')
-        try:
-            until = add(payment_deadline(d,installment),days)
-        except OverflowError:
-            raise Bad('Проверьте срок отсрочки.')
-    else:
-        check_version(d,b)
-        period = whole(b.get('period'),'номер периода')
-        installment = next((r for r in I['un'] if r['k'] == period),None)
-        if not installment:
-            raise Bad('Выберите неоплаченный период.')
-        until = valid_date(b.get('until'))
-    current_deadline = payment_deadline(d,installment)
-    if until <= current_deadline or until < t:
-        raise Bad('Выберите дату позже действующего срока оплаты.')
-    old = copy.deepcopy(d)
-    grant = {'date':t,'due':installment['due'],'k':installment['k'],'until':until,
-             'days':diff(until,current_deadline),'by':'client' if ro == 'client' else 'admin'}
-    d.setdefault('defer',[]).append(grant)
-    put_srv(key,'deal',d,'defer-client' if ro == 'client' else 'defer-period',by,old)
-    tell(d['client'],f"Отсрочка оформлена. Взнос {rub(installment['amt'])} по графику до {dm(D(installment['due']))} можно внести до {dm(D(until))} включительно.")
-    if ro == 'client':say(f"Клиент {(doc(x) or {}).get('name','')} взял отсрочку до {dm(D(until))}.")
-    return grant
 
 def used_schedule_request(key,d):
     return d.get('client_rescheduled') or any(r.get('deal')==key and r.get('status')=='approved' for _,r in docs_of('reschedule'))
@@ -1924,8 +1916,13 @@ def validate_rental_record(d):
         if record.get('part'):halves[int(key)]=record['date']
     def check_balance(debt):
         if (not isinstance(debt,dict) or type(debt.get('k')) is not int or debt['k'] not in halves
-            or debt.get('amt')!=money(minor(plan['weekly'])//2) or valid_date(debt.get('due'))<=halves[debt['k']]):
+            or debt.get('amt')!=money(minor(plan['weekly'])//2)):
             raise Bad('В копии не сходится остаток по неделе аренды.')
+        due=valid_date(debt.get('due'))
+        if due<=halves[debt['k']]:
+            period={'k':debt['k'],'due':add(d['start'],7*(debt['k']-1))}
+            if due!=partial_payment_deadline(d,period):
+                raise Bad('В копии не сходится срок доплаты за неделю аренды.')
     for payment in d.get('dpays') or []:
         prev=payment.get('pv')
         check_balance(prev)
@@ -1971,7 +1968,7 @@ def validate_new_rental(d,t):
              cost=bike.get('cost') or cost,bike_name=bike.get('name',''),bike_vin=bike.get('vin',''))
     if any(d.get(field) for field in ('refund','deposit_refund','payoff','swaps','defer','closed','signed_at','debt','dpays')):
         raise Bad('При выдаче можно учесть первую неделю и обеспечительный платёж.')
-    d['late_fee']=late_fee_record(cfgv('late_fee_amount',DEFAULT_LATE_FEE),cfgv('late_fee_day',DEFAULT_LATE_FEE_DAY))
+    d['late_fee']=late_fee_record(LATE_FEE_AMOUNT,LATE_FEE_DAY)
     validate_rental_record(d)
     tax=cfgv('tax',7);future_rates={'tax':tax if 0<=tax<=100 else 0,**fee_rates('СБП')}
     issue_rates={**future_rates,**fee_rates(first['method'])}
@@ -2111,19 +2108,19 @@ def move_payment(d,source,target,t):
         released=[change for change in bonus.get('reductions') or [] if change not in retained]
         restore_reductions(d,{**bonus,'amt':money(minor(old_bonus)-sum(minor(x['amt']) for x in retained)),'reductions':released})
         d['bonuses'].remove(bonus)
-    pen=penalty(row_['amt'],pdays(payment_deadline(d,row_),payment['date'],d),d.get('pen'))
+    charges=installment_charges(d,row_,payment['date'])
+    pen,fine=charges['pen'],charges['fine']
     cash=money(minor(payment['amt'])+minor(payment.get('pen',0)))
-    if cash<=pen:raise Bad('Суммы первой оплаты недостаточно для неустойки целевого периода на дату получения денег.')
+    if cash<=pen:raise Bad('Суммы первой оплаты недостаточно для начислений по целевому периоду на дату получения денег.')
     principal=min(row_['amt'],money(minor(cash)-minor(pen)))
     remainder=money(minor(row_['amt'])-minor(principal));excess=money(minor(cash)-minor(pen)-minor(principal))
     source_id=payment.get('source') or payment.get('qr') or group
     receipts=payment.get('fees') or fee_rates(payment['method'],estimated=True)
-    put_paid(d,target,payment['date'],principal,pen,payment['method'],payment.get('qr'),remainder>0,source=source_id,fees=receipts)
+    put_paid(d,target,payment['date'],principal,pen,payment['method'],payment.get('qr'),remainder>0,source=source_id,
+             fees=receipts,fine=fine)
     d['paid'][str(target)].update(group=group,due=row_['due'],batch_count=payment.get('batch_count',1),moved_from=int(source))
     if remainder:
-        original_terms=original_debt if original_debt and original_debt['k']==int(source) else (supplements[0].get('pv') if supplements else None)
-        debt_due=original_terms['due'] if original_terms else add(payment['date'],int(cfgv('dbd',3)))
-        d['debt']={'k':target,'amt':remainder,'due':debt_due}
+        d['debt']={'k':target,'amt':remainder,'due':partial_payment_deadline(d,row_)}
     if excess:
         used,changes=reduce_tail(d,excess)
         if used!=excess:raise Bad('Переплата превышает остаток выкупа. Выберите другой период.')
@@ -2155,7 +2152,8 @@ def move_payment(d,source,target,t):
         if wanted<0:raise Bad('Сначала отмените более позднюю оплату взноса, на который уже ушла часть скидки.')
         credited,changes=reduce_tail(d,money(wanted));new_bonus=money(retained_total+minor(credited))
         d.setdefault('bonuses',[]).append({**bonus,'amt':new_bonus,'base':base,'ks':[int(k) for k,p in d['paid'].items() if p.get('group')==group],'reductions':retained+changes})
-    return {'source':int(source),'target':target,'cash':cash,'principal':principal,'pen':pen,'debt':remainder,'excess':excess,'oldBonus':old_bonus,'bonus':new_bonus}
+    return {'source':int(source),'target':target,'cash':cash,'principal':principal,'pen':pen,**({'fine':fine} if fine else {}),
+            'debt':remainder,'excess':excess,'oldBonus':old_bonus,'bonus':new_bonus}
 
 def cancel_payment(d,key):
     key=str(whole(key,'номер периода'));payment=d.get('paid',{}).get(key)
@@ -2277,7 +2275,6 @@ def workflow_action(p,b,ro,x):
     if ro=='client':by=client_log_actor(x)
     if p in ('/api/rental-act','/api/rental-renew','/api/deposit-return'):return rental_action(p,b,ro,x,t,by)
     if p=='/api/early-buyout':return early_buyout_action(b,ro,x,t,by)
-    if p=='/api/defer':return grant_deferral(b,ro,x,t,by)
     if p=='/api/calendar':
         key,d=action_deal(b,ro,x,permission='deals',allow_client=True)
         if d.get('status')!='active':raise Bad('Выкуп закрыт.')
@@ -2472,7 +2469,7 @@ def workflow_action(p,b,ro,x):
     if p=='/api/reschedule-manual':
         key,d=action_deal(b,ro,x,permission='deals')
         if d.get('status')!='active':raise Bad('Выкуп закрыт.')
-        if d.get('lease'):raise Bad('Периоды аренды идут по календарю. Для оплаты можно предоставить отсрочку.')
+        if d.get('lease'):raise Bad('Периоды аренды идут по календарю договора.')
         plan=replan(d,b.get('first'),b.get('pay'),t)
         if b.get('preview'):return {**plan,'version':d.get('_v',0)}
         check_version(d,b)
@@ -2588,7 +2585,7 @@ class H(BaseHTTPRequestHandler):
         if s.path.split('?',1)[0] in ('/privacy','/terms') or s.path.startswith(('/img/','/files/','/dl/')):return s.do_GET()
         return s.send(404,b'')
     def do_GET(s):
-        s.path=s.path.split('?')[0].split('#')[0]
+        s.path,_,query=s.path.split('#',1)[0].partition('?')
         if s.path=='/privacy':
             return s.send(200,privacy_page().encode('utf-8'),'text/html; charset=utf-8',{'Cache-Control':'no-cache'})
         if s.path=='/terms':
@@ -2628,14 +2625,19 @@ class H(BaseHTTPRequestHandler):
                 dd=doc(q['deal']) or {}
                 if not(ro in('owner','admin') or (ro=='client' and dd.get('client')==x)):return s.send(403,b'{}')
                 if q.get('status')=='open':poll_soon()
-                return s.send(200,json.dumps({k:q.get(k) for k in('amt','kind','pen','payload','img','status','date','expires')}).encode())
+                details={k:q.get(k) for k in('amt','kind','pen','payload','img','status','date','expires')}
+                fine=(q.get('quote') or {}).get('fine')
+                if fine:details['fine']=fine
+                return s.send(200,json.dumps(details).encode())
         if s.path.startswith('/img/'):
             t=time.time()
             with L:
                 for a in [a for a,entry in IMG.items() if entry[0]<t]:IMG.pop(a,None)
                 z=IMG.get(s.path[5:])
             if not z:return s.send(404,b'')
-            return s.send(200,z[1],'image/png',attachment_headers('qr-oplata.png'))
+            headers=attachment_headers('qr-oplata.png')
+            if query=='view=1':headers['Content-Disposition']='inline; filename="qr-oplata.png"'
+            return s.send(200,z[1],'image/png',headers)
         if s.path.startswith('/files/'):
             with L:entry=FILE_DL.get(s.path[7:])
             if not entry or entry[0]<time.time():return s.send(404,b'')
@@ -2696,7 +2698,7 @@ class H(BaseHTTPRequestHandler):
             return s.send(200,json.dumps({'url':'/img/'+k}).encode())
         with L:
             ro,x=role(u)
-            if p in ('/api/payquote','/api/pay','/api/pay-debt','/api/cancel-debt-pay','/api/move-payment','/api/cancel-payment','/api/defer','/api/early-buyout',
+            if p in ('/api/payquote','/api/pay','/api/pay-debt','/api/cancel-debt-pay','/api/move-payment','/api/cancel-payment','/api/early-buyout',
                      '/api/reschedule-request','/api/reschedule','/api/reschedule-manual','/api/close-deal','/api/return-deal',
                      '/api/calendar','/api/tariff-image','/api/deal-note','/api/bike-preparation','/api/bike-writeoff','/api/payment-report','/api/statement',
                      '/api/rental-act','/api/rental-renew','/api/deposit-return'):
@@ -2755,8 +2757,8 @@ class H(BaseHTTPRequestHandler):
                                 if 'purchaseCosts' in new:validate_purchase_costs(new['purchaseCosts'])
                                 if 'advanceDiscounts' in new:validate_advance_discounts(new['advanceDiscounts'])
                                 if 'rentalBrands' in new or 'rentalModels' in new:validate_rental_catalog(new)
-                                new.pop('multi_discount',None)
-                                validate_late_fee_settings(new)
+                                for field in ('multi_discount','dd','dbd','late_fee_amount','late_fee_day'):
+                                    new.pop(field,None)
                                 for field in ('receipt','acq','tax','pen'):
                                     if field in new and (not old or old.get(field)!=new[field]):
                                         value=float(new[field])
@@ -2766,11 +2768,6 @@ class H(BaseHTTPRequestHandler):
                                     value=whole(new['dmin'],'минимальный процент')
                                     if not 50<=value<=100:raise Bad('Минимальная частичная оплата — от 50 до 100%.')
                                     new['dmin']=value
-                                for field,minimum in (('dd',1),('dbd',0)):
-                                    if field in new and (not old or old.get(field)!=new[field]):
-                                        value=whole(new[field],'число дней')
-                                        if not minimum<=value<=365:raise Bad('Укажите срок в пределах 365 дней.')
-                                        new[field]=value
                             except (Bad,ValueError,TypeError) as e:return s.send(400,json.dumps({'err':str(e)}).encode())
                         if k=='bike' and new.get('model') is not None and not known_bike_model(new['model']):
                             return s.send(400,json.dumps({'err':'Выберите модель велосипеда.'}).encode())
@@ -2778,6 +2775,8 @@ class H(BaseHTTPRequestHandler):
                             return s.send(400,json.dumps({'err':'Выберите один или два аккумулятора.'}).encode())
                         if k=='deal':
                             try:
+                                if (new.get('defer') or [])!=((old or {}).get('defer') or []):
+                                    raise Bad('Сроки ранее согласованных платежей зафиксированы.')
                                 if old and new.get('lease')!=old.get('lease'):
                                     raise Bad('Условия аренды фиксируются при выдаче.')
                                 if (old and new.get('late_fee')!=old.get('late_fee')) or (not new.get('lease') and 'late_fee' in new):
@@ -2957,7 +2956,7 @@ def job():
             threading.Thread(target=poll,daemon=True).start()
         time.sleep(30)
 def migrate():
-    """One-time: administrators who could give early payments / deferrals also get the new right «Неустойка»."""
+    """One-time: administrators with early payment access also get the «Неустойка» permission."""
     with L:
         os.chmod(BK,0o700)
         legacy=row('tch')
@@ -2973,6 +2972,7 @@ def migrate():
             if 'early' in d.get('perms',[]) and 'pen' not in d['perms']:d['perms']=[q for q in PERMS if q in d['perms']+['pen']];save(i,'admin',d)
         db.execute("insert into ntf values('mig:pen')");db.commit()
 PUBLIC_OPERATOR='Старчевский Максим Юрьевич'
+PUBLIC_OPERATOR_SHORT='Старчевский М.Ю.'
 PUBLIC_INN='781154545535'
 PUBLIC_OGRNIP='323784700210652'
 PUBLIC_PHONE='+7 921 752-10-54'
@@ -3088,24 +3088,21 @@ def public_bot_message(section,index,settings,username,domain):
         if navigation:rows.append(navigation)
         if section=='privacy':rows.append([public_button('К реквизитам','details')])
     elif section=='payment':
-        grace=settings.get('dbd')
-        days=max(1,int(grace if grace is not None else 3))
-        amount=settings.get('late_fee_amount',DEFAULT_LATE_FEE)
-        day=settings.get('late_fee_day',DEFAULT_LATE_FEE_DAY)
         body=('Как платить\n\n'
               'При выдаче оплачиваются первая неделя и обеспечительный платёж, если он указан в тарифе. '
               'Далее график, суммы и фактические оплаты видны в личном кабинете. '
-              'Оплата через СБП проходит по QR из кабинета. Если QR недоступен, позвоните нам и уточните способ оплаты.\n\n'
+              'Для оплаты по СБП откройте платёж в кабинете и выберите свой банк. '
+              'Можно скачать QR-код и загрузить картинку в онлайн-банке, если он поддерживает оплату из галереи. '
+              'Если оплата в кабинете недоступна, позвоните нам.\n\n'
+              f'Если взнос полностью неоплачен, первые {LATE_FEE_DAY-1} дня после срока проходят без начислений. '
+              f'На {LATE_FEE_DAY}-й день добавляется разовый штраф {rub(LATE_FEE_AMOUNT)}. '
+              f'С {UNPAID_PENALTY_DAY}-го дня начисляется ежедневная неустойка.\n\n'
               'Можно оплатить до четырёх ближайших периодов за раз или внести 50% за ближайший период. '
-              f'Внесите вторую половину одним платежом. Срок доплаты в календарных днях — {days}. '
-              'Точная дата указана в кабинете. В этот срок начислений на остаток нет. '
-              f'С {days+1}-го дня на остаток начисляется дневная неустойка по договору. '
-              'Начисления, которые уже были к моменту первой оплаты, входят в неё.\n\n')
-        if amount:
-            body+=(f'По новым договорам при отсутствии оплаты за период на {day}-й день просрочки начисляется '
-                   f'разовый штраф {rub(amount)}. Условия и начисления по своему договору смотрите в кабинете.\n\n')
-        body+=('Выкуп доступен с пятой недели после полной оплаты первых четырёх. '
-               'Арендные платежи засчитываются в пределах цены выкупа. Сумма доплаты рассчитана в кабинете.')
+              f'Внесите вторую половину до конца {PARTIAL_GRACE_DAYS}-го календарного дня после даты по графику. '
+              f'С {PARTIAL_GRACE_DAYS+1}-го дня на остаток начисляется только ежедневная неустойка. '
+              'Начисления, возникшие до первой оплаты, входят в этот платёж.\n\n'
+              'Выкуп доступен с пятой недели после полной оплаты первых четырёх. '
+              'Арендные платежи засчитываются в пределах цены выкупа. Сумма доплаты рассчитана в кабинете.')
     elif section=='return':
         body=(f'Выдача и возврат\n\n{PUBLIC_CITY}. Выдача и возврат по предварительной записи. '
               f'Позвоните {PUBLIC_PHONE}, чтобы согласовать дату, время и адрес.\n\n'
