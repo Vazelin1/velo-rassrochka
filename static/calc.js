@@ -7,6 +7,7 @@ const RENTAL_WEEKS=[20,26];
 const ADVANCES=[10000,20000,30000,40000,50000];
 const CLIENT_PAYMENT_MAX_PERIODS=4;
 const RENTAL_BUYOUT_MIN_PERIODS=4;
+const RENTAL_BUYOUT_REDUCTION_RATE=2;
 const LATE_FEE_AMOUNT=350;
 const LATE_FEE_DAY=3;
 const UNPAID_PENALTY_DAY=4;
@@ -86,8 +87,12 @@ function rentalPaidAmounts(deal,date=today()){
 }
 function rentalBalance(deal,date=today()){
     const paid=[...rentalPaidAmounts(deal,date).values()].reduce((sum,cents)=>sum+cents,0);
-    const price=minor(deal.lease.price);
-    return {paid:money(paid),credited:money(Math.min(price,paid)),remaining:money(Math.max(0,price-paid))};
+    const base=minor(deal.lease.price);
+    const reduction=Object.values(deal.paid||{}).reduce((sum,payment)=>
+        payment.date<=date?sum+minor(payment.buyout_reduction||0):sum,0);
+    const price=Math.max(0,base-reduction);
+    return {paid:money(paid),credited:money(Math.min(price,paid)),remaining:money(Math.max(0,price-paid)),
+        price:money(price),buyoutReduction:money(base-price)};
 }
 function rentalBuyoutProgress(deal,date=today()){
     const amounts=rentalPaidAmounts(deal,date),weekly=minor(deal.lease.weekly);
@@ -100,10 +105,10 @@ function rentalPayoff(deal,date=today()){
     if(!deal.lease||deal.status!='active'||deal.payoff)return null;
     const progress=rentalBuyoutProgress(deal,date);
     if(progress.remaining||progress.opensOn>date)return null;
-    const {paid,credited,remaining}=rentalBalance(deal,date);
+    const {paid,credited,remaining,price,buyoutReduction}=rentalBalance(deal,date);
     const charges=unpaid(deal).map(row=>installmentCharges(deal,row,date));
     const pen=charges.reduce((sum,row)=>sum+row.pen,dstat(deal,date)?.pen||0),fine=charges.reduce((sum,row)=>sum+(row.fine||0),0);
-    return {date,price:deal.lease.price,rent_paid:paid,credited,paid:credited,
+    return {date,price,buyout_reduction:buyoutReduction,rent_paid:paid,credited,paid:credited,
         principal:remaining,pen,...(fine?{fine}:{}),saved:0,total:money(minor(remaining)+minor(pen)),version:deal._v||0};
 }
 function sched(d){
@@ -212,9 +217,11 @@ function paymentQuote(d,options={},settings={},date=today(),{client=false}={}){
         const {days,...charges}=installmentCharges(d,row,date);
         return {...row,...charges};
     });
-    const principal=money(items.reduce((sum,row)=>sum+minor(row.amt),0));
+    const principalCents=items.reduce((sum,row)=>sum+minor(row.amt),0),principal=money(principalCents);
     const pen=items.reduce((sum,row)=>sum+row.pen,0),fine=items.reduce((sum,row)=>sum+(row.fine||0),0);
-    return {mode,date,count,items,principal,pen,...(fine?{fine}:{}),total:money(minor(principal)+minor(pen)),bonus:0,rate:0,reductions:[],rest:0};
+    const reduction=d.lease&&count>=2?money(Math.floor((principalCents*RENTAL_BUYOUT_REDUCTION_RATE+50)/100)):0;
+    return {mode,date,count,items,principal,pen,...(fine?{fine}:{}),...(reduction?{buyout_reduction:reduction}:{}),
+        total:money(principalCents+minor(pen)),bonus:0,rate:0,reductions:[],rest:0};
 }
 
 function changeable(d,date,rows=sched(d)){
@@ -326,7 +333,7 @@ function buyoutTimings(deals,year,now=today()){
 }
 const C={MK,BIKE_MODELS,BATTERY_COUNTS,WEEKLY_TERMS,RENTAL_WEEKS,ADVANCES,CLIENT_PAYMENT_MAX_PERIODS,tariffKey,calc,buyoutQuote,receiptCharges,buyoutForecast,weeklyProfit,
     rentalKey,rentalPrice,rentalForecast,rentalPaidAmounts,rentalBalance,rentalBuyoutProgress,rentalPayoff,sched,deadline,unpaid,penalty,pdays,nopen,installmentPenaltyBase,installmentCharges,penaltyDetail,dstat,
-    LATE_FEE_AMOUNT,LATE_FEE_DAY,UNPAID_PENALTY_DAY,PARTIAL_GRACE_DAYS,partialPaymentDeadline,
+    RENTAL_BUYOUT_REDUCTION_RATE,LATE_FEE_AMOUNT,LATE_FEE_DAY,UNPAID_PENALTY_DAY,PARTIAL_GRACE_DAYS,partialPaymentDeadline,
     paymentQuote,changeable,scheduleBounds,replan,monthlyBuyouts,buyoutTimings,add,diff,today,minor,money};
 if(typeof module!='undefined')module.exports=C;else g.C=C;
 })(this);

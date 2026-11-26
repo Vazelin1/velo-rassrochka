@@ -515,20 +515,22 @@ const hit=x=>!qs.trim()||String(x||'').toLowerCase().includes(qs.trim().toLowerC
 const PREP={inspection:['На осмотре','wa'],repair:['В ремонте','er'],ready:['Готов к выдаче','ok']};
 const rentalModels=()=>S.cfg.rentalModels||{};
 const rentalBrands=()=>S.cfg.rentalBrands||{};
-const catalogEntries=()=>({...C.BIKE_MODELS,...Object.fromEntries(Object.entries(rentalModels()).map(([id,entry])=>[id,entry.name]))});
+const catalogModelArchived=id=>(S.cfg.catalogArchivedModels||[]).includes(id);
+const catalogModelIds=()=>Object.keys({...C.BIKE_MODELS,...rentalModels()}).filter(id=>!catalogModelArchived(id));
 const rentalModel=model=>Object.hasOwn(rentalModels(),model)?rentalModels()[model]:
     {name:Object.hasOwn(C.BIKE_MODELS,model)?C.BIKE_MODELS[model]:'',brand:'',cost:0,batteries:{},plans:{},kitCosts:{}};
 const modelName=model=>rentalModel(model).name;
 const modelTitle=model=>[rentalBrands()[rentalModel(model).brand],modelName(model)].filter(Boolean).join(' ');
 const brandTitle=brand=>rentalBrands()[brand]||'Без бренда';
 const brandGroups=()=>[...Object.keys(rentalBrands()).sort((a,b)=>brandTitle(a).localeCompare(brandTitle(b),'ru')),''];
-const modelsForBrand=brand=>Object.keys(catalogEntries()).filter(id=>(rentalModel(id).brand||'')===brand)
+const modelsForBrand=brand=>catalogModelIds().filter(id=>(rentalModel(id).brand||'')===brand)
     .sort((a,b)=>modelName(a).localeCompare(modelName(b),'ru'));
-const modelOptions=selected=>brandGroups().map(brand=>{
+const modelOptions=(selected,keepSelected=false)=>brandGroups().map(brand=>{
     const models=modelsForBrand(brand);
     return models.length?`<optgroup label="${esc(brandTitle(brand))}">${models.map(id=>
         `<option value="${id}" ${selected===id?'selected':''}>${esc(modelName(id))}</option>`).join('')}</optgroup>`:'';
-}).join('');
+}).join('')+(keepSelected&&catalogModelArchived(selected)?
+    `<option value="${esc(selected)}" selected>${esc(modelName(selected))} · удалена из каталога</option>`:'');
 const legacyModelName=model=>Object.hasOwn(C.BIKE_MODELS,model)?C.BIKE_MODELS[model]:'';
 const configurationName=(model,batteries=1)=>`${legacyModelName(model)||modelName(model)} · ${batteries} АКБ`;
 const batteryLabel=b=>`${pc(b.voltage)} В / ${pc(b.capacity)} А·ч${b.name?' · '+b.name:''}`;
@@ -577,6 +579,7 @@ function removeRentalBattery(target,index){
     updateRentalSelection(target,rentalSelection(target).slots.filter((_,i)=>i!==index));
 }
 function rentalOffers(model,slots){
+    if(catalogModelArchived(model))return [];
     const entry=rentalModel(model),batteries=slots.map(id=>entry.batteries?.[id]);
     if(!batteries.length||batteries.some(b=>!b))return [];
     const plans=entry.plans?.[C.rentalKey(slots)]||{};
@@ -717,7 +720,7 @@ async function addPh(el){
 function fBike(id){const b=S.bikes.find(x=>x.id==id)||{},ro=!can('bikes')?'disabled':'';
 if(id&&(!b.id||b.erased))return backBtn()+empty('bike','Карточка велосипеда удалена');
 return `${backBtn()}<div class=hd><h1>${id?'Велосипед':'Новый велосипед'}</h1></div>${bikePreparation(b)}<div class=form>${fld('Название','n',b.name,ro)}
-<label class=fld><span>Модель велосипеда</span><select id=bike-model ${ro}><option value="">Выберите модель</option>${modelOptions(b.model)}</select></label>
+<label class=fld><span>Модель велосипеда</span><select id=bike-model ${ro}><option value="">Выберите модель</option>${modelOptions(b.model,true)}</select></label>
 ${isOwner()?`<button type=button class="btn sec sm catalog-link" onclick="go('catalogS')">${ic('plus','s')}Бренды и модели</button>`:''}
 ${fld('VIN','vin',b.vin,ro)}${fld('Стоимость закупки, ₽','co',b.cost,'type=number min=0 step=0.01 inputmode=decimal '+ro)}${fld('SIM-карта трекера','sim',b.sim,ro)}<label class=fld><span>Комментарий</span><textarea id=cm rows=3 ${ro}>${esc(b.comment)}</textarea></label>
 ${ro?'':`<label class=fld><span>Фото (до 4, удаляются навсегда при переводе в архив)</span></label><label class="btn sec">${ic('up','s')}Добавить фото<input type=file accept="image/*" multiple hidden onchange="addPh(this)"></label><div id=th>${thumbs()}</div>
@@ -747,7 +750,8 @@ async function editPreparation(id){
 /* ---------- new deal */
 let issueSlots=[];
 function fDeal(){
-    const clients=S.clients.filter(c=>!c.archived&&!dealOf('client',c.id)),bikes=S.bikes.filter(bikeReady);
+    const clients=S.clients.filter(c=>!c.archived&&!dealOf('client',c.id));
+    const bikes=S.bikes.filter(b=>bikeReady(b)&&!catalogModelArchived(b.model));
     return `${backBtn()}<div class=hd><h1>Новая аренда с правом выкупа</h1></div><div class=form>
         <label class=fld><span>Клиент</span><select id=c onchange=updD()>${clients.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
         <label class=fld><span>Велосипед</span><select id=b onchange="issueBatteryOptions();termOpts();updD()">${bikes.map(b=>`<option value="${b.id}">${esc([b.name,modelTitle(b.model)].filter(Boolean).join(' · '))}</option>`).join('')}</select></label>
@@ -911,11 +915,16 @@ function depositDetails(d){
     return kv('Обеспечительный платёж',m(d.deposit.amt))+(release?
         kv('Возвращено',m(release.amt)+' · '+fmt(release.date))+(release.held?kv('Удержано',m(release.held)):''):'');
 }
+function rentalPriceRows(base,price,reduction){
+    if(!reduction)return kv('Цена выкупа',m(price));
+    return kv('Исходная цена выкупа',m(base))+kv('Уменьшение цены за оплату нескольких периодов','−'+m(reduction))+
+        kv('Цена выкупа с учётом уменьшения',m(price));
+}
 function staffRentalTerms(d){
     const balance=C.rentalBalance(d),active=d.status==='active'&&!d.payoff,start=C.add(d.start,28);
     return `<div class=card><b>Аренда с правом выкупа</b><p class=sub>${esc(rentalConfiguration(d.lease))}</p>
         ${kv('Плата за неделю',m(d.lease.weekly))}${kv('Аренда по',fmt(rentalEnd(d)))}
-        ${kv('Цена выкупа',m(d.lease.price))}${kv('Оплачено за аренду',m(balance.paid))}
+        ${rentalPriceRows(d.lease.price,balance.price,balance.buyoutReduction)}${kv('Оплачено за аренду',m(balance.paid))}
         ${active?kv('Остаток к выкупу',m(balance.remaining))+kv('Выкуп с',fmt(start)+' · после 4 оплаченных недель'):''}
         ${depositDetails(d)}${d.refund?kv('Возвращено за дни аренды',m(d.refund)):''}
         ${d.status==='archived'&&d.payoff&&can('deals')?`<button class="btn sec blk" onclick="downloadRentalAct('${d.id}')">${ic('down','s')}Скачать акт выкупа</button>`:''}
@@ -996,9 +1005,10 @@ if(!await uiConfirm('Оплата пропадёт из истории и отч
 try{await api('/api/cancel-debt-pay',{deal:id,version:d._v||0});await load();toast('Оплата долга отменена')}catch(error){uiAlert(error.message||error)}}
 async function unpay(id,k){
 const d=S.deals.find(item=>item.id==id),p=d.paid[k];if(!p)return;
-const count=p.group?Object.values(d.paid).filter(item=>item.group==p.group).length:1;
+const batch=p.group?Object.values(d.paid).filter(item=>item.group==p.group):[p],count=batch.length;
 const bonus=p.group&&(d.bonuses||[]).some(item=>item.group===p.group);
-const text=count>1?`Оплата за ${count} ${plur(count,'период','периода','периодов')} будет отменена целиком.${bonus?' Связанная скидка будет отменена.':''}`:'Оплата будет удалена из истории, остаток пересчитается.';
+const reduction=batch.find(item=>item.buyout_reduction)?.buyout_reduction;
+const text=count>1?`Оплата за ${count} ${plur(count,'период','периода','периодов')} будет отменена целиком.${bonus?' Связанная скидка будет отменена.':''}${reduction?` Уменьшение цены выкупа на ${m(reduction)} будет отменено.`:''}`:'Оплата будет удалена из истории, остаток пересчитается.';
 if(!await uiConfirm(text,'Отменить оплату',{danger:true,title:'Отменить оплату?'}))return;
 try{await api('/api/cancel-payment',{deal:id,period:k,version:d._v||0});await load();toast('Оплата отменена')}catch(e){uiAlert(e)}
 }
@@ -1063,10 +1073,14 @@ function selectCalculatorModel(model){
     calculatorSlots=rentalDefaultSlots(model);
 }
 function calcS(){
-    if(!calculatorModel){
-        selectCalculatorModel(Object.keys(catalogEntries()).find(model=>
-            Object.values(rentalModel(model).plans||{}).some(plans=>Object.keys(plans).length))||'monster');
+    const models=catalogModelIds();
+    if(!models.length)return backBtn()+empty('bike','Добавьте модель в каталог.');
+    if(!models.includes(calculatorModel)){
+        selectCalculatorModel(models.find(model=>
+            Object.values(rentalModel(model).plans||{}).some(plans=>Object.keys(plans).length))||models[0]);
     }
+    const batteries=rentalModel(calculatorModel).batteries||{};
+    calculatorSlots=calculatorSlots.filter(id=>Object.hasOwn(batteries,id));
     return `${backBtn()}<div class=hd><h1>Расчёт для клиента</h1></div><div class=form>
         <label class=fld><span>Модель</span><select id=tariff-model onchange="selectCalculatorModel(this.value);render(true)">${modelOptions(calculatorModel)}</select></label>
         <div id=calculator-batteries>${rentalBatteryPicker('calculator',calculatorModel,calculatorSlots)}</div>
@@ -1074,10 +1088,12 @@ function calcS(){
 }
 function renderCalculatorBatteries(){$('#calculator-batteries').innerHTML=rentalBatteryPicker('calculator',calculatorModel,calculatorSlots)}
 const selectedRentalOffers=()=>rentalOffers(calculatorModel,calculatorSlots);
+const rentalReductionRule=()=>`При оплате двух и более периодов одним платежом ${C.RENTAL_BUYOUT_REDUCTION_RATE}% от арендной платы уменьшают цену выкупа. Аренду вы оплачиваете полностью.`;
 function rentalMemo(){
     return [
         'При выдаче оплачиваете первую неделю аренды и вносите обеспечительный платёж, если он предусмотрен тарифом.',
         'В кабинете можно оплатить до четырёх периодов сразу или внести половину за ближайший период. Условия доплаты доступны в памятке кабинета.',
+        rentalReductionRule(),
         'Выкуп доступен с начала пятой недели, когда первые четыре недели прошли и полностью оплачены. Каждый рубль внесённой арендной платы уменьшает остаток к выкупу. Обеспечительный платёж учитывается отдельно.',
         'Если возвращаете велосипед, плата за прошедшие дни остаётся за аренду. Если оплатили вперёд, расчёт за оставшиеся дни делаем при возврате.',
         'После выкупа или возврата велосипеда возвращаем обеспечительный платёж за вычетом сумм, удержанных по договору.',
@@ -1086,7 +1102,9 @@ function rentalMemo(){
 }
 const rentalMemoHtml=()=>rentalMemo().map(line=>`<p class=sub>${esc(line)}</p>`).join('');
 function updC(){
-    const offers=selectedRentalOffers(),box=$('#tb');
+    const box=$('#tb');
+    if(!box)return;
+    const offers=selectedRentalOffers();
     if(!offers.length){
         box.innerHTML=`<div class=card>Для выбранной комплектации пока нет тарифов.</div>`+fold('Памятка для клиента',rentalMemoHtml());
         return;
@@ -1576,11 +1594,25 @@ const openCatalogGroups=new Set(['']);
 const catalogId=prefix=>prefix+Array.from(crypto.getRandomValues(new Uint8Array(6)),byte=>byte.toString(16).padStart(2,'0')).join('');
 const writeCatalog=patch=>put('cfg',{...S.cfg,id:'cfg',...patch});
 const writeModel=(id,model)=>writeCatalog({rentalModels:{...rentalModels(),[id]:model}});
+async function removeCatalogEntry({kind,id,model,title,detail},version){
+    if(!await uiConfirm(detail,'Удалить',{title,danger:true}))return false;
+    await api('/api/catalog-delete',{kind,id,model,version});
+    if(kind==='brand'){
+        openCatalogGroups.delete(id);
+        openCatalogGroups.add('');
+    }else{
+        const affectedModel=kind==='model'?id:model;
+        for(const key of tariffDrafts.keys()){
+            const [draftModel,slots]=key.split(':');
+            if(draftModel===affectedModel&&(kind==='model'||slots.split(',').includes(id)))tariffDrafts.delete(key);
+        }
+    }
+    return true;
+}
 function catalogS(){
     if(!isOwner())return backBtn()+empty('lock','Каталог доступен владельцу.');
     const groups=brandGroups().map(brand=>{
         const models=modelsForBrand(brand);
-        if(!brand&&!models.length)return '';
         return fold(`${esc(brandTitle(brand))} · ${models.length}`,`
             <div class=grp>${models.map(id=>{
                 const amount=Object.keys(rentalModel(id).batteries||{}).length;
@@ -1596,7 +1628,7 @@ function catalogS(){
 }
 function modelS(model){
     const entry=rentalModel(model);
-    if(!isOwner()||!entry.name)return backBtn()+empty('bike','Модель недоступна.');
+    if(!isOwner()||!entry.name||catalogModelArchived(model))return backBtn()+empty('bike','Модель недоступна.');
     const batteries=Object.entries(entry.batteries);
     return `${backBtn()}<div class="hd catalog-model"><div><small>${esc(brandTitle(entry.brand||''))}</small><h1>${esc(entry.name)}</h1></div></div>
         <div class="card catalog-details">${kv('Закупка велосипеда без АКБ',entry.cost?m(entry.cost):'—')}
@@ -1608,17 +1640,37 @@ function modelS(model){
             <span class=tx><b>Добавить вариант АКБ</b></span></button></div>
         <div class=acts><button type=button class="btn sec" onclick="changeTariffModel('${model}',true)">Открыть тарифы модели</button></div>`;
 }
-function catalogEditor(title,fields,save){
+function catalogEditor(title,fields,save,removal){
+    const version=S.cfg._v||0;
     return sheet(`<h3>${title}</h3>${fields}<button class="btn blk" data-save>Сохранить</button>
+        ${removal?'<button type=button class="btn dng blk" data-remove>Удалить</button>':''}
         <button class="btn sec blk" data-close>Отмена</button>`,(root,done)=>{
-        const button=root.querySelector('[data-save]'),get=id=>root.querySelector('#'+id).value.trim();
+        const button=root.querySelector('[data-save]'),removeButton=root.querySelector('[data-remove]');
+        const get=id=>root.querySelector('#'+id).value.trim();
+        const busy=value=>{button.disabled=value;if(removeButton)removeButton.disabled=value};
         root.querySelector('[data-close]').onclick=()=>done();
         button.onclick=async()=>{
             if([...root.querySelectorAll('input')].some(input=>!input.reportValidity()))return;
-            button.disabled=true;
+            if((S.cfg._v||0)!==version)return uiAlert('Каталог изменился. Откройте запись заново.');
+            busy(true);
             try{await save(get);done();toast('Сохранено')}
             catch(error){if(error!==ABORT)uiAlert(error.message||error)}
-            finally{button.disabled=false}
+            finally{busy(false)}
+        };
+        if(removeButton)removeButton.onclick=async()=>{
+            busy(true);
+            try{
+                if(!await removeCatalogEntry(removal,version))return;
+                done();
+                await load(true);
+                const [page,model]=V.at(-1);
+                if(removal.kind==='model'&&page==='modelS'&&model===removal.id)back();
+                else render(true);
+                toast('Удалено из каталога');
+            }catch(error){
+                await load().catch(()=>{});
+                uiAlert(error.message||error);
+            }finally{busy(false)}
         };
     });
 }
@@ -1629,7 +1681,8 @@ function editCatalogBrand(id){
         if(!name)throw Error('Введите название бренда.');
         openCatalogGroups.add(key);
         await writeCatalog({rentalBrands:{...rentalBrands(),[key]:name}});
-    });
+    },id&&{kind:'brand',id,title:`Удалить бренд «${rentalBrands()[id]}»?`,
+        detail:'Модели этого бренда перейдут в группу «Без бренда».'});
 }
 function editCatalogModel(id,brand=''){
     const entry=rentalModel(id),selected=id?entry.brand||'':brand;
@@ -1644,7 +1697,8 @@ function editCatalogModel(id,brand=''){
         openCatalogGroups.add(newBrand);
         await writeModel(key,{...saved,name,brand:newBrand,cost:+get('catalog-cost')});
         if(!id)go('modelS',key);
-    });
+    },id&&{kind:'model',id,title:`Удалить модель «${entry.name}»?`,
+        detail:'Модель и её тарифы исчезнут из новых выдач. Договоры и карточки велосипедов сохранятся.'});
 }
 function editCatalogBattery(model,id){
     const battery=rentalModel(model).batteries[id]||{};
@@ -1657,12 +1711,17 @@ function editCatalogBattery(model,id){
         const key=id||catalogId('a'),name=get('catalog-name'),entry=rentalModel(model);
         const data={voltage:+get('catalog-voltage'),capacity:+get('catalog-capacity'),cost:+get('catalog-cost'),...(name?{name}:{})};
         await writeModel(model,{...entry,batteries:{...entry.batteries,[key]:data}});
-    });
+    },id&&{kind:'battery',id,model,title:`Удалить АКБ «${batteryLabel(battery)}»?`,
+        detail:'Тарифы и закупочные цены комплектов с этим АКБ будут удалены. Комплектация в оформленных договорах сохранится.'});
 }
 function tariffsS(){
     if(!isOwner())return backBtn()+empty('lock','Настройки тарифов доступны владельцу.');
+    const models=catalogModelIds();
+    if(!models.length)return backBtn()+empty('bike','Добавьте модель в каталог.');
+    if(!models.includes(tariffModel)){tariffModel=models[0];tariffSlots=null}
     const entry=rentalModel(tariffModel);
     tariffSlots??=rentalDefaultSlots(tariffModel);
+    tariffSlots=tariffSlots.filter(id=>Object.hasOwn(entry.batteries,id));
     const slots=tariffSlots,key=C.rentalKey(slots),draftKey=tariffDraftKey(tariffModel,slots,tariffWeeks);
     const saved=entry.plans[key]?.[tariffWeeks],draft=tariffDrafts.get(draftKey);
     const {price='',weekly='',deposit=''}=draft||saved||{};
@@ -1699,6 +1758,7 @@ function updateRentalTariff(input){
     $('[data-rental-forecast]').innerHTML=rentalForecastPanel({weeks:tariffWeeks,weekly:+draft.weekly,price:+draft.price},cost);
 }
 async function saveRentalTariff(button,remove=false){
+    const version=S.cfg._v||0;
     const root=button.closest('fieldset'),slots=tariffSlots,key=C.rentalKey(slots);
     const draftKey=tariffDraftKey(tariffModel,slots,tariffWeeks),draft=tariffDrafts.get(draftKey),entry=rentalModel(tariffModel);
     const price=+v('#rent-price'),weekly=+v('#rent-weekly'),deposit=+v('#rent-deposit'),kit=+v('#rent-kit');
@@ -1707,6 +1767,7 @@ async function saveRentalTariff(button,remove=false){
     }else if(!weekly||!price||[...root.querySelectorAll('input')].some(input=>!input.checkValidity())){
         return uiAlert('Укажите суммы в целых рублях.');
     }
+    if((S.cfg._v||0)!==version)return uiAlert('Каталог изменился. Откройте тариф заново.');
     const plans={...entry.plans,[key]:{...entry.plans[key]}},kitCosts={...entry.kitCosts};
     if(remove){delete plans[key][tariffWeeks];if(!Object.keys(plans[key]).length)delete plans[key]}
     else{
@@ -1747,7 +1808,7 @@ function set(){
         <button class="btn sec" onclick="$('#rf').click()">${ic('up','s')}Восстановить</button></div>
         <input id=rf type=file accept=".json,application/json" hidden onchange="restoreFile(this)"></div>`;
     const log=`<div class=grp><button class="row nl" onclick="go('logS')"><span class=gl>${ic('list')}</span><span class=tx><b>Открыть журнал действий</b><span>Кто и что менял</span></span>${ic('right')}</button></div>`;
-    return `<div class=hd><div><small>Версия 28</small><h1>Настройки</h1></div></div>`
+    return `<div class=hd><div><small>Версия 30</small><h1>Настройки</h1></div></div>`
         +tariffs
         +settingSection('payments','Платежи, штрафы и неустойка',payments)
         +settingSection('fees','Налог и комиссии',fees)
@@ -1835,6 +1896,8 @@ const journalActions={
     'invite-qr':['access','Создан QR для входа'],'unbind':['access','Сброшен доступ'],
     'login':['access','Администратор вошёл'],'login-client':['access','Клиент вошёл'],
     'tochka':['settings','Изменено подключение Точки'],'restore':['settings','Восстановлена резервная копия'],
+    'delete-catalog-brand':['settings','Удалён бренд'],'delete-catalog-model':['settings','Удалена модель'],
+    'delete-catalog-battery':['settings','Удалён вариант АКБ'],
     'expense-add':['expense','Добавлен расход'],'expense-edit':['expense','Изменён расход'],'expense-delete':['expense','Удалён расход']
 };
 const logTime=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'short',timeStyle:'medium'});
@@ -1968,6 +2031,9 @@ function journalFields(data,kind,action){
         set(`Закупка · ${name}`,data.purchaseCosts?.[key],m);
     }
     for(const name of Object.values(data.rentalBrands||{}))set(`Бренд · ${name}`,name);
+    for(const id of data.catalogArchivedModels||[]){
+        set(`Модель · ${data.rentalModels?.[id]?.name||legacyModelName(id)||id}`,'Удалена из каталога');
+    }
     for(const [id,entry] of Object.entries(data.rentalModels||{})){
         if(!entry.name)continue;
         const label=[data.rentalBrands?.[entry.brand],entry.name].filter(Boolean).join(' ')||id;
@@ -2089,6 +2155,7 @@ async function saveQR(q,qid){
 async function showQR(qid,title,client){let q;try{q=await api('/api/qr/'+qid)}catch(e){return uiAlert(e)}let timer;
 const payLink=/^https:\/\//i.test(q.payload)?q.payload:'';
 await sheet(`<h3>${client?'Оплата через СБП':'QR на оплату'}</h3><p>${esc(title||'')}</p><div class="pv qrbox"><div class=big>${m(q.amt)}</div><div class=sm>${q.pen?`в том числе ${chargeText(q).slice(2)} · `:''}действует до ${q.expires?q.expires.slice(11,16)+' МСК':'23:59 МСК'}</div>
+${q.buyout_reduction&&q.status==='open'?`<p class="sm rental-range">После подтверждения цена выкупа уменьшится на ${m(q.buyout_reduction)}.</p>`:''}
 <div style="margin:14px 0 0">${q.img?`<img class=qrimg src="data:image/png;base64,${esc(q.img)}" alt="QR-код">`:QR.svg(q.payload,220)}</div></div>
 <div id=qs class="note t-bl" style="margin:10px 0">${ic('clock','s')}<div>Ждём оплату…</div></div>
 ${payLink?`<a class="btn blk" data-l href="${esc(payLink)}" target="_blank" rel="noopener">${ic('link','s')}Оплатить в своём банке</a>`:''}
@@ -2158,9 +2225,12 @@ function earlyBuyoutTerms(quote){
         </tbody></table></div><p class=sub>Между датами цена меняется по дням. Первоначальный взнос и платежи за велосипед входят в итоговую цену.</p>`);
 }
 function earlyBuyoutSummary(quote){
-    if('credited' in quote)return `<div class=pv><div class=mu>К доплате за выкуп</div><div class=big>${m(quote.total)}</div>
-        ${kv('Полная цена выкупа',m(quote.price))}${kv('Оплачено за аренду',m(quote.rent_paid))}
+    if('credited' in quote){
+        const reduction=quote.buyout_reduction||0,base=C.money(C.minor(quote.price)+C.minor(reduction));
+        return `<div class=pv><div class=mu>К доплате за выкуп</div><div class=big>${m(quote.total)}</div>
+        ${rentalPriceRows(base,quote.price,reduction)}${kv('Оплачено за аренду',m(quote.rent_paid))}
         ${kv('Засчитывается в цену',m(quote.credited))}${chargeRows(quote)}</div>`;
+    }
     return `<div class=pv><div class=mu>К оплате за полный выкуп</div><div class=big>${m(quote.total)}</div>
         ${kv('Итоговая стоимость велосипеда',m(quote.price))}${kv('Уже внесено в стоимость',m(quote.paid))}
         ${kv('Экономия к текущему графику',m(quote.saved))}${chargeRows(quote)}</div>`+earlyBuyoutTerms(quote);
@@ -2256,7 +2326,8 @@ async function paymentOptions(id,manual=false,statement=null){
             ${statement&&I.g?`<option value=bank-debt>${d.lease?'Доплата за период':'В погашение долга'}</option>`:''}
         </select></label>
         <div data-full>${periodPicker}
-        <p class="sm mu">Периоды оплачиваются по порядку, начиная с ближайшего неоплаченного.</p></div>
+        <p class="sm mu">Периоды оплачиваются по порядку, начиная с ближайшего неоплаченного.</p>
+        ${d.lease?`<p class="sm mu">${rentalReductionRule()}</p>`:''}</div>
         <div data-part hidden>${d.lease?'':`<label class=fld><span>Часть платежа, ₽</span><input data-amount type=number inputmode=numeric min="${minPart}" value="${minPart}"></label>`}
         <p class=help-line>${d.lease?'Половина платы за период':`Не меньше ${minimum}%`} <button class=qi type=button onclick="partialPaymentHelp('${id}')" aria-label="Как работает частичная оплата">?</button></p></div>
         ${manual?`<label class=fld><span>Дата получения</span><input type=date data-date min="${d.start}" max="${C.today()}" value="${statement?.date||C.today()}" ${statement?'readonly':''}></label><label class=fld><span>Способ оплаты</span><select data-method ${statement?'disabled':''}><option ${statement?'hidden':''}>наличные</option><option ${statement?'selected':''}>СБП</option><option ${statement?'hidden':''}>перевод</option></select></label>`:''}
@@ -2283,13 +2354,16 @@ async function paymentOptions(id,manual=false,statement=null){
                 quote=current;
                 const periods=(quote.items||[]).map(row=>d.lease?`${fmt(row.due)} – ${fmt(C.add(row.due,6))}`:per(d,row));
                 const buyout=d.lease&&C.rentalPayoff(d,date());
+                const reduction=quote.buyout_reduction||0;
+                const priceAfter=reduction?C.money(Math.max(0,C.minor(C.rentalBalance(d,date()).price)-C.minor(reduction))):0;
                 get('[data-summary]').innerHTML=`<div class=mu>К оплате</div><div class=big>${m(quote.received??quote.total)}</div>
                     ${kv(d.lease?'Аренда':'В счёт основной суммы',m(quote.principal))}${chargeRows(quote)}
+                    ${reduction?kv('Цена выкупа уменьшится','−'+m(reduction))+kv('Цена выкупа после оплаты',m(priceAfter)):''}
                     ${quote.credit?kv('В зачёт будущих взносов с конца графика',m(quote.credit)):''}
                     ${quote.surplus?kv('Остаток на сверку',m(quote.surplus)):''}
                     ${quote.rest?kv('К доплате',m(quote.rest))+kv(quote.debtDue<date()?'Срок доплаты истёк':'Внести до включительно',fmt(quote.debtDue)):''}
                     <div class="sm rental-range">${periods.join('<br>')}</div>
-                    ${buyout&&quote.principal>=buyout.principal?`<p class="sm rental-range">Остаток к выкупу — ${m(buyout.principal)}. Для перехода в собственность выберите выкуп в кабинете.</p>`:''}`;
+                    ${buyout&&C.minor(quote.principal)+C.minor(reduction)>=C.minor(buyout.principal)?`<p class="sm rental-range">${buyout.total?`Выкуп сейчас — ${m(buyout.total)}.`:'Выкуп уже доступен без доплаты.'} Если хотите оформить выкуп, откройте его в кабинете.</p>`:''}`;
                 button.disabled=!manual&&!(client?ME.qr:S.tch.on);
                 if(button.disabled)get('[data-summary]').innerHTML+='<p>Оплата по QR пока не подключена. Свяжитесь с нами для оплаты.</p>';
             }catch(error){if(sequenceAtStart==sequence){quote=null;button.disabled=true;get('[data-summary]').textContent=error.message||error}}
@@ -2302,15 +2376,16 @@ async function paymentOptions(id,manual=false,statement=null){
                 if(manual){
                     const body=request(),preview=quote;
                     const live=await api('/api/payquote',body);
-                    const changed=['mode','date','total','pen','fine','bonus','received','credit','surplus','rest','debtDue'].some(field=>live[field]!=preview[field]);
+                    const changed=['mode','date','total','pen','fine','bonus','buyout_reduction','received','credit','surplus','rest','debtDue'].some(field=>live[field]!=preview[field]);
                     if(live.version!=(d._v||0)||changed)throw Error('Расчёт обновился. Откройте оплату заново.');
                     if(!await confirmDuplicate(live.duplicate)){button.disabled=false;return}
-                    if(!await uiConfirm(`Получено ${m(live.received??live.total)}.${live.credit?` В зачёт будущих взносов ${m(live.credit)}.`:''}${live.surplus?` На сверку ${m(live.surplus)}.`:''}${live.rest?` Остаток ${m(live.rest)} до ${fmt(live.debtDue)}.`:''}`,'Принять',{title:'Подтвердите оплату'})){button.disabled=false;return}
+                    if(!await uiConfirm(`Получено ${m(live.received??live.total)}.${live.buyout_reduction?` Цена выкупа уменьшится на ${m(live.buyout_reduction)}.`:''}${live.credit?` В зачёт будущих взносов ${m(live.credit)}.`:''}${live.surplus?` На сверку ${m(live.surplus)}.`:''}${live.rest?` Остаток ${m(live.rest)} до ${fmt(live.debtDue)}.`:''}`,'Принять',{title:'Подтвердите оплату'})){button.disabled=false;return}
                     await api('/api/pay',{...body,method:statement?'СБП':get('[data-method]').value,version:live.version,expected_total:live.total,expected_bonus:live.bonus,expected_quote:live,confirmedDuplicate:live.duplicate?.source});
                     accepted=true;done();await refreshAccount();toast('Оплата принята');
                 }else{
                     const selection=options();
                     selection.preview={version:d._v||0,date:quote.date,total:quote.total,...(quote.debtDue?{debtDue:quote.debtDue}:{})};
+                    if(d.lease)selection.preview.buyout_reduction=quote.buyout_reduction||0;
                     const result=await api(client?'/api/cqr':'/api/qr',{deal:id,kind:'selection',options:selection});
                     qrId=result.qr;done();
                 }
@@ -2782,13 +2857,14 @@ function cabinetMemo(d){
         'Выберите оплату частями для ближайшего платежа.';
     return fold('Памятка по кабинету',`<div class=rental-guide>
         <p><b>Оплата.</b> ${payment}</p>
+        ${d.lease?`<p><b>Уменьшение цены выкупа.</b> ${rentalReductionRule()} Накопленная сумма видна в разделе выкупа. В расчёт входят только платежи за аренду.</p>`:''}
         <p><b>Оплата через СБП.</b> Выберите «Оплатить в своём банке» или скачайте QR-код в PNG. Загрузите его в разделе оплаты по QR своего банка, если там доступен выбор картинки.</p>
         <p><b>Полная неоплата.</b> ${unpaidChargesText()}</p>
         <p><b>Оплата частями.</b> ${partial} ${partialDeadlineText()} ${partialChargeText(d)}</p>
         <p><b>Пример.</b> ${partialExample} ${priorChargesText}</p>
         <p><b>График.</b> Здесь видны даты, суммы, статус оплаты и срок доплаты.</p>
         ${d.lease?`<p><b>Выкуп велосипеда.</b> Выкуп открывается с пятой недели после полной оплаты первых четырёх. В карточке появится сумма финального платежа. После расчёта свяжитесь с нами для подписания документов.</p>
-        <p><b>Условия договора.</b> В этом разделе указаны цена выкупа, внесённая аренда${d.deposit?' и обеспечительный платёж':''}.</p>`:''}
+        <p><b>Условия договора.</b> В этом разделе указаны недельная плата, внесённая аренда${d.deposit?' и обеспечительный платёж':''}.</p>`:''}
         <p><b>История оплат.</b> Здесь появляются подтверждённые платежи. Если деньги списались и записи ещё нет, нажмите «Я оплатил, но платёж не появился» в истории.</p>
         </div>`,'data-cabinet-memo');
 }
@@ -2817,6 +2893,7 @@ function clientRental(d){
             aria-valuemax="${progress.milestones.length}" aria-valuenow="${progress.milestones.length-progress.remaining}">
             ${progress.milestones.map(paid=>`<span ${paid?'data-paid':''}></span>`).join('')}
         </div>
+        ${rentalPriceRows(d.lease.price,balance.price,balance.buyoutReduction)}
         ${payoff?`<div class=rental-final><span class=mu>Финальный платёж</span><div class=rental-balance>${m(payoff.total)}</div>
             ${chargeRows(payoff)}</div>
             <button class="btn sec blk" onclick="earlyBuyout('${d.id}')">${payoff.total?'Выкупить велосипед':'Оформить выкуп без доплаты'}</button>`:
@@ -2828,7 +2905,7 @@ function clientRental(d){
     const terms=fold('Условия договора',`
         ${kv('Велосипед и АКБ',esc(rentalConfiguration(d.lease)))}
         ${kv('Плата за неделю',m(d.lease.weekly))}${kv('Аренда по',fmt(rentalEnd(d)))}
-        ${kv('Цена выкупа',m(d.lease.price))}${kv('Оплачено за аренду',m(balance.paid))}
+        ${open?'':rentalPriceRows(d.lease.price,balance.price,balance.buyoutReduction)}${kv('Оплачено за аренду',m(balance.paid))}
         ${depositDetails(d)}${d.refund?kv('Возвращено за дни аренды',m(d.refund)):''}`);
     const heading=[leaseModelTitle(d.lease),d.contract&&'договор № '+d.contract].filter(Boolean).join(' · ');
     return `<div class=rental-account><div class=hd><div><small>${esc(heading)}</small><h1>Аренда с правом выкупа</h1></div></div>
@@ -2867,15 +2944,16 @@ function rentalHistory(d){
     const groups=new Map();
     for(const [period,payment] of Object.entries(d.paid||{})){
         const key=payment.group||'period-'+period;
-        if(!groups.has(key))groups.set(key,{date:payment.date,method:payment.method,periods:[],amt:0,pen:0,fine:0,part:!!payment.part});
+        if(!groups.has(key))groups.set(key,{date:payment.date,method:payment.method,periods:[],amt:0,pen:0,fine:0,reduction:0,part:!!payment.part});
         const group=groups.get(key);
         group.periods.push(period);
         group.amt+=C.minor(payment.amt);
         group.pen+=C.minor(payment.pen||0);
         group.fine+=C.minor(payment.fine||0);
+        group.reduction+=C.minor(payment.buyout_reduction||0);
     }
     return [...groups.values()].map(group=>({date:group.date,a:m(C.money(group.amt+group.pen)),
-        s:`${group.part?'первая половина аренды':'аренда'}, ${group.periods.length===1?'период':'периоды'} ${group.periods.join(', ')}, ${esc(group.method)}${chargeText({pen:C.money(group.pen),fine:C.money(group.fine)})}`}));
+        s:`${group.part?'первая половина аренды':'аренда'}, ${group.periods.length===1?'период':'периоды'} ${group.periods.join(', ')}, ${esc(group.method)}${chargeText({pen:C.money(group.pen),fine:C.money(group.fine)})}${group.reduction?`<br>Цена выкупа уменьшена на ${m(C.money(group.reduction))}`:''}`}));
 }
 const chist=d=>{const L=(d.lease?rentalHistory(d):Object.entries(d.paid).map(([k,p])=>({date:p.date,a:m(p.amt+(p.pen||0)),s:`период ${periodNumber(d,k)}${p.part?' (часть)':''}, ${esc(p.method)}${chargeText(p)}`}))).concat((d.dpays||[]).map(z=>({date:z.date,a:m(z.amt+(z.pen||0)),s:`долг по периоду ${periodNumber(d,z.k)}, ${esc(z.method)}${chargeText(z)}`}))).concat((d.early||[]).map(e=>({date:e.date,a:m(e.paid||e.amt),s:`${e.kind=='move-credit'?'Переплата после переноса':'досрочный платёж'}, ${esc(e.method)}`}))).concat((d.bonuses||[]).map(b=>({date:b.date,a:'−'+m(b.amt),s:`скидка ${pc(b.rate)}% с конца графика`}))).concat(d.payoff?[
     ...((d.payoff.amt||d.payoff.pen)?[{date:d.payoff.date,a:m(d.payoff.amt+d.payoff.pen),s:`${d.lease?'доплата за выкуп':'досрочный выкуп'}, ${esc(d.payoff.method)}${chargeText(d.payoff)}`}]:[]),
