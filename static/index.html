@@ -537,7 +537,7 @@ const batteryLabel=b=>`${pc(b.voltage)} В / ${pc(b.capacity)} А·ч${b.name?' 
 const leaseModelTitle=lease=>[lease.brandName,lease.modelName||legacyModelName(lease.model)||modelName(lease.model)].filter(Boolean).join(' ');
 const rentalConfiguration=lease=>[leaseModelTitle(lease),lease.batteries.map(batteryLabel).join(' + ')].filter(Boolean).join(' · ');
 function rentalDefaultSlots(model){
-    const entry=rentalModel(model),key=Object.keys(entry.plans||{}).find(key=>Object.keys(entry.plans[key]).length);
+    const entry=rentalModel(model),key=Object.keys(entry.plans||{}).find(key=>C.RENTAL_WEEKS.some(weeks=>entry.plans[key][weeks]));
     return key?key.split(','):Object.keys(entry.batteries||{}).slice(0,1);
 }
 function rentalBatteryPicker(target,model,slots){
@@ -589,8 +589,8 @@ function rentalOffers(model,slots){
 }
 function rentalCost(model,slots){
     const entry=rentalModel(model),parts=slots.map(id=>entry.batteries?.[id]);
-    return entry.kitCosts?.[C.rentalKey(slots)]??(entry.cost&&parts.every(b=>b?.cost)?
-        C.money(C.minor(entry.cost)+parts.reduce((sum,b)=>sum+C.minor(b.cost),0)):0);
+    return entry.cost&&parts.every(b=>b?.cost)?
+        C.money(C.minor(entry.cost)+parts.reduce((sum,b)=>sum+C.minor(b.cost),0)):0;
 }
 const leaseForecast=(lease,options)=>C.rentalForecast(lease,{tax:TX(),acq:AQ(),receipt:RC(),...options});
 const configurations=Object.keys(C.BIKE_MODELS).flatMap(model=>C.BATTERY_COUNTS.map(batteries=>({
@@ -722,7 +722,7 @@ if(id&&(!b.id||b.erased))return backBtn()+empty('bike','Карточка вел�
 return `${backBtn()}<div class=hd><h1>${id?'Велосипед':'Новый велосипед'}</h1></div>${bikePreparation(b)}<div class=form>${fld('Название','n',b.name,ro)}
 <label class=fld><span>Модель велосипеда</span><select id=bike-model ${ro}><option value="">Выберите модель</option>${modelOptions(b.model,true)}</select></label>
 ${isOwner()?`<button type=button class="btn sec sm catalog-link" onclick="go('catalogS')">${ic('plus','s')}Бренды и модели</button>`:''}
-${fld('VIN','vin',b.vin,ro)}${fld('Стоимость закупки, ₽','co',b.cost,'type=number min=0 step=0.01 inputmode=decimal '+ro)}${fld('SIM-карта трекера','sim',b.sim,ro)}<label class=fld><span>Комментарий</span><textarea id=cm rows=3 ${ro}>${esc(b.comment)}</textarea></label>
+${fld('VIN','vin',b.vin,ro)}${fld('Стоимость закупки, ₽','co',b.cost,'type=number min=0 step=0.01 inputmode=decimal '+ro)}${isOwner()?cashInput('Штраф для новых договоров по этому велосипеду, ₽','bike-fine',b.default_fine_amount??'','placeholder="По общим настройкам"'):''}${fld('SIM-карта трекера','sim',b.sim,ro)}<label class=fld><span>Комментарий</span><textarea id=cm rows=3 ${ro}>${esc(b.comment)}</textarea></label>
 ${ro?'':`<label class=fld><span>Фото (до 4, удаляются навсегда при переводе в архив)</span></label><label class="btn sec">${ic('up','s')}Добавить фото<input type=file accept="image/*" multiple hidden onchange="addPh(this)"></label><div id=th>${thumbs()}</div>
 <div class=acts><button class="btn blk" onclick="saveB('${b.id||''}')">Сохранить</button></div>`}
 ${b.id&&!ro?`<div class=acts><button class="btn sec" onclick="go('expS','${b.id}')">${ic('receipt','s')}Расходы</button><button class="btn sec" onclick="go('woS','${b.id}')">${ic('x','s')}Списать</button></div><div class=acts><button class="btn dng" onclick="arc('bike','${b.id}')">${ic('box','s')}В архив</button></div>`:''}</div>`}
@@ -732,7 +732,14 @@ async function saveB(id){
     const model=v('#bike-model');
     if(!modelName(model))return uiAlert('Выберите модель велосипеда.');
     const o=S.bikes.find(x=>x.id==id)||{};
-    await put('bike',{...o,id:id||undefined,name:v('#n').trim(),model,vin:v('#vin'),cost:+v('#co'),sim:v('#sim'),comment:v('#cm'),photos:ph});
+    const fine=$('#bike-fine');
+    if(fine&&!fine.checkValidity())return uiAlert('Укажите штраф в целых рублях.');
+    const patch={...o,id:id||undefined,name:v('#n').trim(),model,vin:v('#vin'),cost:+v('#co'),sim:v('#sim'),comment:v('#cm'),photos:ph};
+    if(fine){
+        if(fine.value==='')delete patch.default_fine_amount;
+        else patch.default_fine_amount=+fine.value;
+    }
+    await put('bike',patch);
     hap('success');toast('Велосипед сохранён');tab='bikes';nav('base');
 }
 function bikePreparation(b){
@@ -831,8 +838,6 @@ async function saveDeal(){
 
 /* ---------- deal screen */
 const EXP=b=>((b&&b.exp)||[]).reduce((a,e)=>a+e.amt,0),TX=()=>S.cfg.tax==null?7:S.cfg.tax,AQ=()=>S.cfg.acq||0,RC=()=>S.cfg.receipt||0,pc=x=>(+x).toLocaleString('ru'),exc=d=>(d.extras||[]).reduce((a,e)=>a+e.cost,0);
-const recordedBikeCost=(bike,deals=S.deals)=>bike.cost||deals.filter(d=>d.lease&&d.cost&&useSegs(d)[0].bike===bike.id)
-    .sort((first,second)=>first.start.localeCompare(second.start))[0]?.cost||0;
 const giftCost=d=>d.gift?.amount??0;
 const handoverLabels={
     documents_signed:'Документы подписаны',
@@ -878,12 +883,13 @@ function dealActions(d,I=info(d)){
         payment.push(['receipt','QR на оплату',()=>qrDeal(id)],['send','Выставить платёж клиенту',()=>billS(id)]);
         if(I.g)payment.push(['check','Принять оплату долга',()=>go('debtS',id)]);
     }
-    if(on&&d.payoff&&!d.payoff.qr&&!d.deposit_refund&&can('pay'))
+    if(on&&d.payoff&&(!d.payoff.qr||d.lease&&isOwner())&&!d.deposit_refund&&can('pay'))
         payment.push(['x',d.lease?'Отменить отметку о выкупе':'Отменить отметку о досрочном выкупе',()=>cancelEarlyBuyout(id)]);
     if(on&&!I.done&&isOwner()&&!d.payoff_terms&&d.tariff?.weeks>C.WEEKLY_TERMS[0]){
         contract.push(['receipt','Подключить досрочный выкуп',()=>enableEarlyBuyout(id)]);
     }
     if(on&&!d.payoff&&can('pen')){
+        schedule.push(['edit','Изменить размер штрафа',()=>editDealFine(id)]);
         const penalty=I.pen+(I.g?.pen||0);
         if(penalty>0)schedule.push(['x',`Списать начисления, ${m(penalty)}`,()=>waive(id)]);
         if(I.od.length||I.g||C.nopen(d))schedule.push(['shield',C.nopen(d)?'Возобновить начисления':'Приостановить начисления',()=>noPen(id)]);
@@ -922,10 +928,12 @@ function rentalPriceRows(base,price,reduction){
 }
 function staffRentalTerms(d){
     const balance=C.rentalBalance(d),active=d.status==='active'&&!d.payoff,start=C.add(d.start,28);
+    const next=(d.fine_rates||[]).find(change=>change.from>C.today());
     return `<div class=card><b>Аренда с правом выкупа</b><p class=sub>${esc(rentalConfiguration(d.lease))}</p>
         ${kv('Плата за неделю',m(d.lease.weekly))}${kv('Аренда по',fmt(rentalEnd(d)))}
         ${rentalPriceRows(d.lease.price,balance.price,balance.buyoutReduction)}${kv('Оплачено за аренду',m(balance.paid))}
         ${active?kv('Остаток к выкупу',m(balance.remaining))+kv('Выкуп с',fmt(start)+' · после 4 оплаченных недель'):''}
+        ${active?kv('Разовый штраф',m(C.fineAmount(d)))+(next?kv('Штраф с '+fmt(next.from),m(next.amount)):''):''}
         ${depositDetails(d)}${d.refund?kv('Возвращено за дни аренды',m(d.refund)):''}
         ${d.status==='archived'&&d.payoff&&can('deals')?`<button class="btn sec blk" onclick="downloadRentalAct('${d.id}')">${ic('down','s')}Скачать акт выкупа</button>`:''}
         </div>`;
@@ -1001,7 +1009,7 @@ if(!await uiConfirm(`Принять ${m(c.tot)}${c.pen?` (в том числе �
 await api('/api/pay-debt',{...body,version:quote.version,confirmedDuplicate:quote.duplicate?.source});await load(true);back();toast(c.rest>0?'Оплата принята, долг остался':'Долг закрыт');
 }catch(error){uiAlert(error.message||error)}}
 async function unDebt(id){const d=S.deals.find(x=>x.id==id),z=(d.dpays||[])[(d.dpays||[]).length-1];if(!z)return;if(d.debt&&d.debt.k!=z.k)return uiAlert('Сначала закройте или отмените текущий долг.');
-if(!await uiConfirm('Оплата пропадёт из истории и отчётов, долг вернётся в прежнем виде.','Отменить платёж',{danger:true,title:'Отменить оплату долга?'}))return;
+if(!await uiConfirm('Оплата пропадёт из истории и отчётов, долг вернётся в прежнем виде. Банковская операция останется в выписке.','Отменить платёж',{danger:true,title:'Отменить оплату долга?'}))return;
 try{await api('/api/cancel-debt-pay',{deal:id,version:d._v||0});await load();toast('Оплата долга отменена')}catch(error){uiAlert(error.message||error)}}
 async function unpay(id,k){
 const d=S.deals.find(item=>item.id==id),p=d.paid[k];if(!p)return;
@@ -1009,8 +1017,16 @@ const batch=p.group?Object.values(d.paid).filter(item=>item.group==p.group):[p],
 const bonus=p.group&&(d.bonuses||[]).some(item=>item.group===p.group);
 const reduction=batch.find(item=>item.buyout_reduction)?.buyout_reduction;
 const text=count>1?`Оплата за ${count} ${plur(count,'период','периода','периодов')} будет отменена целиком.${bonus?' Связанная скидка будет отменена.':''}${reduction?` Уменьшение цены выкупа на ${m(reduction)} будет отменено.`:''}`:'Оплата будет удалена из истории, остаток пересчитается.';
-if(!await uiConfirm(text,'Отменить оплату',{danger:true,title:'Отменить оплату?'}))return;
+if(!await uiConfirm(text+(p.method==='СБП'?' Деньги в банке эта операция не возвращает.':''),'Отменить оплату',{danger:true,title:'Отменить оплату?'}))return;
 try{await api('/api/cancel-payment',{deal:id,period:k,version:d._v||0});await load();toast('Оплата отменена')}catch(e){uiAlert(e)}
+}
+async function editDealFine(id){
+    const d=dealById(id),from=C.add(C.today(),1);
+    const value=await uiPrompt(`Разовый штраф, ₽. Новый размер применяется к штрафам с ${fmt(from)}. 0 ₽ отключает будущие штрафы.`,String(C.fineAmount(d,from)));
+    if(value===null)return;
+    if(!String(value).trim()||!Number.isSafeInteger(+value)||+value<0)return uiAlert('Укажите сумму штрафа в целых рублях.');
+    try{await api('/api/deal-fine',{deal:id,version:d._v||0,amount:+value});await load();toast('Размер штрафа сохранён')}
+    catch(error){uiAlert(error.message||error)}
 }
 async function waive(id){
     const d=dealById(id),I=info(d),total=I.pen+(I.g?.pen||0);
@@ -1067,7 +1083,7 @@ async function fin(id,st){
     }catch(error){uiAlert(error.message||error)}
 }
 /* ---------- calculator */
-let calculatorModel='',calculatorSlots=[];
+let calculatorModel='',calculatorSlots=[],comparisonOffers=[];
 function selectCalculatorModel(model){
     calculatorModel=model;
     calculatorSlots=rentalDefaultSlots(model);
@@ -1077,7 +1093,7 @@ function calcS(){
     if(!models.length)return backBtn()+empty('bike','Добавьте модель в каталог.');
     if(!models.includes(calculatorModel)){
         selectCalculatorModel(models.find(model=>
-            Object.values(rentalModel(model).plans||{}).some(plans=>Object.keys(plans).length))||models[0]);
+            Object.values(rentalModel(model).plans||{}).some(plans=>C.RENTAL_WEEKS.some(weeks=>plans[weeks])))||models[0]);
     }
     const batteries=rentalModel(calculatorModel).batteries||{};
     calculatorSlots=calculatorSlots.filter(id=>Object.hasOwn(batteries,id));
@@ -1088,16 +1104,74 @@ function calcS(){
 }
 function renderCalculatorBatteries(){$('#calculator-batteries').innerHTML=rentalBatteryPicker('calculator',calculatorModel,calculatorSlots)}
 const selectedRentalOffers=()=>rentalOffers(calculatorModel,calculatorSlots);
+function comparisonHtml(){
+    const rows=comparisonOffers.map((offer,i)=>`<div class=card>
+        <b>${esc(leaseModelTitle(offer))}</b>
+        <p class=sub>${offer.batteries.map((battery,index)=>'АКБ '+(index+1)+' · '+esc(batteryLabel(battery))).join('<br>')}</p>
+        ${kv('Срок',`${offer.weeks} нед.`)}${kv('Еженедельная аренда',m(offer.weekly))}${kv('Цена выкупа',m(offer.price))}
+        ${kv('При выдаче',m(offer.weekly+offer.deposit))}${offer.deposit?kv('Из них возвратный платёж',m(offer.deposit)):''}
+        <div class=acts><button type=button class="btn sec" onclick="downloadTariffImage(this,[comparisonOffers[${i}]])">Скачать картинку</button>
+        <button type=button class="btn sec" onclick="shareRentalOffer(comparisonOffers[${i}])">График</button>
+        <button type=button class="btn sec" aria-label="Убрать вариант ${i+1}" onclick="comparisonOffers.splice(${i},1);updC()">${ic('trash','s')}</button></div></div>`).join('');
+    return `<h2 class=sec>Подборка для клиента${rows?' · '+comparisonOffers.length:''}</h2>
+        <div class=card><p class=sub style="margin-top:0">${rows?'Смените модель или АКБ, чтобы добавить ещё одну комплектацию.':'Добавьте текущую комплектацию, затем выберите другую модель или АКБ.'}</p>
+        ${rows?`<div class=acts><button type=button class="btn blk" onclick="downloadTariffImage(this,comparisonOffers,{comparison:true})">${ic('down','s')}Скачать все варианты одной картинкой</button>
+        <button type=button class="btn sec blk" onclick="copyComparisons()">Скопировать все варианты текстом</button></div>`:''}</div>${rows}`;
+}
+function copyComparisons(){
+    if(!comparisonOffers.length)return;
+    const lines=comparisonOffers.map((offer,index)=>[
+        `Вариант ${index+1} · ${leaseModelTitle(offer)}`,
+        ...offer.batteries.map((battery,i)=>`АКБ ${i+1} · ${batteryLabel(battery)}`),
+        `${offer.weeks} недель · ${m(offer.weekly)} в неделю · цена выкупа ${m(offer.price)}`,
+        `При выдаче ${m(offer.weekly+offer.deposit)}${offer.deposit?`, включая возвратный платёж ${m(offer.deposit)}`:''}`
+    ].join('\n'));
+    return copyTextSheet('Варианты аренды с правом выкупа',lines.join('\n\n'));
+}
+function addCalculatorOffer(){
+    const offer=selectedRentalOffers()[0];
+    if(!offer)return addComparisonOffer();
+    const alreadyAdded=comparisonOffers.some(item=>item.model===offer.model&&C.rentalKey(item.slots)===C.rentalKey(offer.slots)&&
+        item.weeks===offer.weeks&&item.price===offer.price&&item.weekly===offer.weekly&&item.deposit===offer.deposit);
+    if(alreadyAdded)return toast('Эта комплектация уже в подборке');
+    comparisonOffers.push(offer);
+    updC();toast('Комплектация добавлена в подборку');
+}
+function addComparisonOffer(){
+    const model=calculatorModel,slots=[...calculatorSlots],entry=rentalModel(model);
+    if(!slots.length)return uiAlert('Добавьте аккумулятор в комплект.');
+    const batteries=slots.map(id=>entry.batteries[id]);
+    if(batteries.some(battery=>!battery))return uiAlert('Проверьте комплектацию.');
+    const offer=selectedRentalOffers()[0],weeks=C.RENTAL_WEEKS[0];
+    return sheet(`<h3>Новый вариант расчёта</h3>
+        <p>${esc(rentalConfiguration({model,modelName:entry.name,brandName:rentalBrands()[entry.brand]||'',batteries}))}</p>
+        ${cashInput('Цена выкупа, ₽','offer-price',offer?.price??'')}
+        ${cashInput('Плата за неделю, ₽','offer-weekly',offer?.weekly??'')}
+        ${cashInput('Возвратный платёж, ₽','offer-deposit',offer?.deposit??0)}
+        <button class="btn blk" data-save>Добавить к сравнению</button><button class="btn sec blk" data-close>Отмена</button>`,(root,done)=>{
+        const get=field=>root.querySelector('#offer-'+field),fields=['price','weekly','deposit'];
+        for(const [field,other] of [['price','weekly'],['weekly','price']]){
+            get(field).oninput=()=>{get(other).value=C.rentalPrice(+get(field).value,weeks,field)?.[other]??''};
+        }
+        root.querySelector('[data-close]').onclick=()=>done();
+        root.querySelector('[data-save]').onclick=()=>{
+            const price=+get('price').value,deposit=+get('deposit').value;
+            const plan=C.rentalPrice(price,weeks,'price');
+            if(!plan||fields.some(field=>!get(field).checkValidity()||get(field).value===''))return uiAlert('Заполните суммы в целых рублях.');
+            comparisonOffers.push({...plan,deposit,model,modelName:entry.name,brandName:rentalBrands()[entry.brand]||'',slots,batteries});
+            done();updC();toast('Комплектация добавлена в подборку');
+        };
+    });
+}
 const rentalReductionRule=()=>`При оплате двух и более периодов одним платежом ${C.RENTAL_BUYOUT_REDUCTION_RATE}% от арендной платы уменьшают цену выкупа. Аренду вы оплачиваете полностью.`;
 function rentalMemo(){
     return [
-        'При выдаче оплачиваете первую неделю аренды и вносите обеспечительный платёж, если он предусмотрен тарифом.',
+        'При выдаче оплачиваете первую неделю аренды. По некоторым тарифам также вносится возвратный платёж.',
         'В кабинете можно оплатить до четырёх периодов сразу или внести половину за ближайший период. Условия доплаты доступны в памятке кабинета.',
         rentalReductionRule(),
         'Выкуп доступен с начала пятой недели, когда первые четыре недели прошли и полностью оплачены. Каждый рубль внесённой арендной платы уменьшает остаток к выкупу. Обеспечительный платёж учитывается отдельно.',
         'Если возвращаете велосипед, плата за прошедшие дни остаётся за аренду. Если оплатили вперёд, расчёт за оставшиеся дни делаем при возврате.',
-        'После выкупа или возврата велосипеда возвращаем обеспечительный платёж за вычетом сумм, удержанных по договору.',
-        'После полной оплаты выкупа согласуйте время, чтобы подписать акт и получить второй комплект ключей.'
+        'Возвратный платёж возвращаем после выкупа или сдачи электровелосипеда. Если по договору остались суммы к оплате, сначала сверим расчёт с вами.'
     ];
 }
 const rentalMemoHtml=()=>rentalMemo().map(line=>`<p class=sub>${esc(line)}</p>`).join('');
@@ -1106,7 +1180,9 @@ function updC(){
     if(!box)return;
     const offers=selectedRentalOffers();
     if(!offers.length){
-        box.innerHTML=`<div class=card>Для выбранной комплектации пока нет тарифов.</div>`+fold('Памятка для клиента',rentalMemoHtml());
+        box.innerHTML=`<div class=card>Для выбранной комплектации пока нет тарифов.
+            ${calculatorSlots.length?'<div class=acts><button type=button class="btn blk" onclick="addComparisonOffer()">Добавить со своими суммами</button></div>':''}</div>`+
+            comparisonHtml()+fold('Памятка для клиента',rentalMemoHtml());
         return;
     }
     const name=rentalConfiguration(offers[0]);
@@ -1116,9 +1192,11 @@ function updC(){
     box.innerHTML=`<div class=card><b>Аренда с правом выкупа</b><p class=sub>${esc(name)}</p><div class=table-scroll>
         <table class=data-table><thead><tr><th scope=col>Срок</th><th scope=col>В неделю</th><th scope=col>Обеспечение</th>
         <th scope=col>Цена выкупа</th><th scope=col></th></tr></thead><tbody>${rows}</tbody></table></div>
-        <div class=acts><button class="btn blk" onclick="saveCalculatorImage(this)">${ic('down','s')}Скачать картинку</button>
+        <div class=acts><button type=button class="btn blk" onclick="addCalculatorOffer()">${ic('plus','s')}Добавить эту комплектацию</button>
+        <button type=button class="btn sec blk" onclick="addComparisonOffer()">Добавить со своими суммами</button>
+        <button class="btn sec blk" onclick="saveCalculatorImage(this)">${ic('down','s')}Скачать только этот вариант</button>
         <button class="btn sec blk" onclick="shareTariffTable()">Скопировать тарифы</button></div></div>`+
-        fold('Памятка для клиента',rentalMemoHtml());
+        comparisonHtml()+fold('Памятка для клиента',rentalMemoHtml());
 }
 function shareTariffTable(){
     const offers=selectedRentalOffers();
@@ -1140,55 +1218,72 @@ function sampleScheduleText(offer,date){
         `Выкуп доступен с ${fmt(C.add(date,28))} при полной оплате первых 4 недель.`,'',...rows,'','Памятка',...rentalMemo()].join('\n');
 }
 function shareOffer(weeks){
-    const offer=selectedRentalOffers().find(item=>item.weeks===weeks);
+    return shareRentalOffer(selectedRentalOffers().find(item=>item.weeks===weeks));
+}
+function shareRentalOffer(offer){
     if(!offer)return;
     return copyTextSheet('График аренды',sampleScheduleText(offer,C.today()),(root)=>{
         const date=root.querySelector('[data-issue-date]'),field=root.querySelector('[data-message]'),download=root.querySelector('[data-schedule-image]');
         date.oninput=()=>{if(date.value)field.value=sampleScheduleText(offer,date.value)};
-        download.onclick=()=>{if(date.value)downloadTariffImage(download,[offer],date.value)};
+        download.onclick=()=>{if(date.value)downloadTariffImage(download,[offer],{date:date.value})};
     },`<label class=fld><span>Дата выдачи</span><input type=date data-issue-date value="${C.today()}"></label>
         <button class="btn sec blk" data-schedule-image>${ic('down','s')}Скачать картинку</button>`);
 }
 function saveCalculatorImage(button){return downloadTariffImage(button,selectedRentalOffers())}
 function tariffImageData(offers,date){
-    const offer=offers[0],title='Аренда с правом выкупа',subtitle=rentalConfiguration(offer),memo=rentalMemo();
+    const offer=offers[0],title='Аренда с правом выкупа',subtitle=leaseModelTitle(offer),memo=rentalMemo();
+    const batteries=offer.batteries.map((battery,index)=>`АКБ ${index+1}  ·  ${batteryLabel(battery)}`);
     if(date){
-        return {title,subtitle,details:[`Цена выкупа — ${m(offer.price)}. Аренда — ${m(offer.weekly)} в неделю.`,
-            `При выдаче ${fmt(date)} — ${m(offer.weekly+offer.deposit)}, обеспечение ${m(offer.deposit)}.`,
+        return {title,subtitle,batteries,details:[`Цена выкупа — ${m(offer.price)}. Аренда — ${m(offer.weekly)} в неделю.`,
+            `При выдаче ${fmt(date)} — ${m(offer.weekly+offer.deposit)}, возвратный платёж ${m(offer.deposit)}.`,
             `Выкуп с ${fmt(C.add(date,28))} при полной оплате первых 4 недель.`],memo,
             labels:['Оплачено','Плата за аренду','Остаток к выкупу'],rows:rentalSchedule(offer).map(row=>
                 ({cells:[`${row.week} нед.`,m(row.paid),row.week>=4?m(row.remaining):'—']}))};
     }
-    return {title,subtitle,details:[],memo,labels:['Срок','В неделю','Обеспечение','Цена выкупа'],
+    return {title,subtitle,batteries,details:[],memo,labels:['Срок','В неделю','Возвратный платёж','Цена выкупа'],
         rows:offers.map(o=>({cells:[`${o.weeks} нед.`,m(o.weekly),m(o.deposit),m(o.price)]}))};
+}
+const imageFont=(size,bold=false)=>`${bold?'700':'400'} ${size}px "DejaVu Sans", Arial, sans-serif`;
+function wrapImageText(ctx,value,width){
+    const lines=[];let line='';
+    for(const word of value.split(' ')){
+        const next=line?`${line} ${word}`:word;
+        if(!line||ctx.measureText(next).width<=width){line=next;continue}
+        lines.push(line);line=word;
+    }
+    if(line)lines.push(line);
+    return lines;
+}
+function drawOfferImage(ctx){
+    const fill=(color,x,y,w,h)=>{ctx.fillStyle=color;ctx.fillRect(x,y,w,h)};
+    const text=(value,x,y,size,{bold=false,color='#172c30',align='left',width}={})=>{
+        ctx.font=imageFont(size,bold);ctx.fillStyle=color;ctx.textAlign=align;
+        if(width)ctx.fillText(value,x,y,width);else ctx.fillText(value,x,y);
+    };
+    return {fill,text};
 }
 function renderTariffPng(data){
     const canvas=document.createElement('canvas'),width=1080,inset=64,right=width-inset;
     const ctx=canvas.getContext('2d'),available=right-inset,positions=data.labels.length==4?[inset+18,435,706,right-18]:[inset+18,665,right-18];
     const ink='#172c30',muted='#486361',green='#237364',tint='#eff7f4',rule='#d9e7e2';
-    const font=(size,bold=false)=>`${bold?'700':'400'} ${size}px "DejaVu Sans", Arial, sans-serif`;
-    ctx.font=font(28);
-    const wrap=text=>{
-        const lines=[];let line='';
-        for(const word of text.split(' ')){
-            const next=line?`${line} ${word}`:word;
-            if(line&&ctx.measureText(next).width>available-66){lines.push(line);line=word}else line=next;
-        }
-        if(line)lines.push(line);return lines;
-    };
-    const subtitle=wrap(data.subtitle),extraHeader=34*(subtitle.length-1);
-    const notes=data.memo.map(wrap),rowHeight=data.rows.some(row=>row.last)?89:61,head=226+extraHeader+data.details.length*40;
+    const wrap=value=>wrapImageText(ctx,value,available-66);
+    ctx.font=imageFont(46,true);
+    const subtitle=wrap(data.subtitle);
+    ctx.font=imageFont(34,true);
+    const batteries=data.batteries.flatMap(wrap);
+    ctx.font=imageFont(28);
+    const details=data.details.flatMap(wrap);
+    const extraHeader=56*(subtitle.length-1)+44*batteries.length;
+    const notes=data.memo.map(wrap),rowHeight=data.rows.some(row=>row.last)?89:61,head=248+extraHeader+details.length*40;
     const memoY=head+56+rowHeight*data.rows.length+36;
     canvas.width=width;canvas.height=memoY+90+notes.reduce((sum,lines)=>sum+36*lines.length+15,0);
-    const fill=(color,x,y,w,h)=>{ctx.fillStyle=color;ctx.fillRect(x,y,w,h)};
-    const text=(value,x,y,size,{bold=false,color=ink,align='left'}={})=>{
-        ctx.font=font(size,bold);ctx.fillStyle=color;ctx.textAlign=align;ctx.fillText(value,x,y);
-    };
+    const {fill,text}=drawOfferImage(ctx);
     fill('#ffffff',0,0,width,canvas.height);
     text('ВОЛЬТ ВОЯЖ',inset,67,23,{bold:true,color:green});
-    text(data.title,inset,142,54,{bold:true});
-    subtitle.forEach((line,index)=>text(line,inset,190+34*index,28,{color:muted}));
-    data.details.forEach((line,index)=>text(line,inset,234+extraHeader+40*index,29,{bold:index===0}));
+    text(data.title,inset,129,43,{bold:true});
+    subtitle.forEach((line,index)=>text(line,inset,195+56*index,46,{bold:true}));
+    batteries.forEach((line,index)=>text(line,inset,244+56*(subtitle.length-1)+44*index,34,{bold:true,color:green}));
+    details.forEach((line,index)=>text(line,inset,247+extraHeader+40*index,29,{bold:index===0}));
     fill(tint,inset,head,available,56);
     const drawCells=(cells,y,header)=>cells.forEach((label,column)=>text(label,positions[column],y,header?23:32,{
         align:column?'right':'left',color:header?muted:ink,bold:header||column===cells.length-1}));
@@ -1209,12 +1304,68 @@ function renderTariffPng(data){
     }
     return canvas.toDataURL('image/png').split(',')[1];
 }
-async function downloadTariffImage(button,offers,date){
+function renderComparisonPng(offers){
+    const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d');
+    const width=900,inset=44,cardWidth=width-2*inset,left=inset+30,right=width-left,contentWidth=right-left;
+    const green='#237364',muted='#486361',background='#eff7f4',rule='#d9e7e2';
+    const wrap=value=>wrapImageText(ctx,value,contentWidth);
+    const cards=offers.map(offer=>{
+        ctx.font=imageFont(44,true);
+        const title=wrap(leaseModelTitle(offer));
+        ctx.font=imageFont(33,true);
+        const batteries=offer.batteries.flatMap((battery,i)=>wrap(`АКБ ${i+1} · ${batteryLabel(battery)}`));
+        const values=[['Еженедельная аренда',offer.weekly],['Цена выкупа',offer.price],['При выдаче',offer.weekly+offer.deposit]];
+        if(offer.deposit)values.push(['Из них возвратный платёж',offer.deposit]);
+        const height=160+52*(title.length-1)+42*batteries.length+49*values.length;
+        return {title,batteries,values,height,weeks:offer.weeks};
+    });
+    ctx.font=imageFont(27);
+    const notes=rentalMemo().map(note=>wrapImageText(ctx,note,contentWidth-32));
+    const memoY=158+cards.reduce((offset,card)=>offset+card.height+18,0);
+    const height=memoY+112+notes.reduce((offset,lines)=>offset+35*lines.length+12,0);
+    const scale=Math.min(1,8192/height);
+    canvas.width=Math.round(width*scale);canvas.height=Math.ceil(height*scale);
+    ctx.scale(scale,scale);
+    const {fill,text}=drawOfferImage(ctx);
+    fill(background,0,0,width,height);
+    text('ВОЛЬТ ВОЯЖ',inset,58,22,{bold:true,color:green});
+    text('Аренда с правом выкупа',inset,119,47,{bold:true,width:cardWidth});
+    let y=158;
+    cards.forEach((card,index)=>{
+        const top=y;
+        fill('#ffffff',inset,top,cardWidth,card.height);
+        text(`Вариант ${index+1}`,left,top+43,26,{bold:true,color:green});
+        text(`${card.weeks} нед.`,right,top+43,26,{bold:true,color:muted,align:'right'});
+        card.title.forEach((line,i)=>text(line,left,top+104+52*i,44,{bold:true,width:contentWidth}));
+        y=top+112+52*(card.title.length-1);
+        for(const line of card.batteries){text(line,left,y+35,33,{bold:true,color:green,width:contentWidth});y+=42}
+        y+=21;
+        fill(rule,left,y,contentWidth,1);
+        card.values.forEach(([label,amount],i)=>{
+            y+=49;
+            text(label,left,y,i===3?26:31,{color:muted});
+            text(m(amount),right,y,i===3?29:36,{bold:i<3,align:'right',width:contentWidth*0.42});
+        });
+        y=top+card.height+18;
+    });
+    fill('#ffffff',inset,memoY,cardWidth,height-memoY-32);
+    text('Памятка',left,memoY+44,29,{bold:true,color:green});
+    y=memoY+85;
+    for(const note of notes){
+        text('•',left,y,27,{color:green});
+        for(const line of note){text(line,left+28,y,27,{width:contentWidth-28});y+=35}
+        y+=12;
+    }
+    return canvas.toDataURL('image/png').split(',')[1];
+}
+async function downloadTariffImage(button,offers,{date,comparison=false}={}){
     if(!offers.length||button.disabled)return;
     button.disabled=true;
     try{
-        const png=renderTariffPng(tariffImageData(offers,date)),offer=offers[0];
-        const file=await api('/api/tariff-image',{model:offer.model,slots:offer.slots,weeks:date?offer.weeks:undefined,png});
+        const png=comparison?renderComparisonPng(offers):renderTariffPng(tariffImageData(offers,date));
+        if(!png)throw Error('Не удалось создать картинку.');
+        const {model,slots,weeks}=offers[0];
+        const file=await api('/api/tariff-image',comparison?{comparison:true,png}:{model,slots,weeks:date?weeks:undefined,png});
         downloadNamed(file);
     }catch(error){uiAlert(error.message||error)}
     finally{button.disabled=false}
@@ -1264,11 +1415,11 @@ const y=+p.slice(1,5),mo=+p.slice(6,8);return[`${y}-${z2(mo)}-01`,`${y}-${z2(mo)
 const pLab=p=>p=='all'?'Всё время':p[0]=='Y'?`${p.slice(1)} год`:`${MF[+p.slice(6,8)-1]} ${p.slice(1,5)}`;
 function events(deals=S.deals){const r=[];deals.forEach(d=>{const p1=(d.paid||{})[1]||{};
 if(d.down)r.push({date:d.start,amt:d.down,pen:0,method:d.down_method||p1.method||'наличные',fees:d.down_fees,source:d.down_source,t:'down',d});
-Object.values(d.paid||{}).forEach(p=>r.push({date:p.date,amt:p.amt,pen:p.pen||0,fine:p.fine||0,method:p.method||'наличные',fees:p.fees,source:p.source||p.qr||p.group,t:d.lease?'rent':'pay',d}));
-(d.dpays||[]).forEach(z=>r.push({date:z.date,amt:z.amt,pen:z.pen||0,fine:z.fine||0,method:z.method||'наличные',fees:z.fees,source:z.source||z.qr,t:d.lease?'rent':'pay',d}));
+Object.entries(d.paid||{}).forEach(([period,p])=>r.push({target:{kind:'period',period},date:p.date,amt:p.amt,pen:p.pen||0,fine:p.fine||0,method:p.method||'наличные',fees:p.fees,source:p.source||p.qr||p.group,t:d.lease?'rent':'pay',d}));
+(d.dpays||[]).forEach((z,index)=>r.push({target:index===d.dpays.length-1?{kind:'debt'}:null,date:z.date,amt:z.amt,pen:z.pen||0,fine:z.fine||0,method:z.method||'наличные',fees:z.fees,source:z.source||z.qr,t:d.lease?'rent':'pay',d}));
 (d.early||[]).forEach(e=>r.push({date:e.date,amt:e.paid??e.amt,pen:0,method:e.method||'наличные',fees:e.fees,source:e.source,t:'early',d}));
 const p=d.payoff;
-if(p&&(p.amt||p.pen))r.push({date:p.date,amt:p.amt,pen:p.pen,fine:p.fine||0,method:p.method,fees:p.fees,source:p.source||p.qr,t:d.lease?'buyout':'early',d});
+if(p&&(p.amt||p.pen))r.push({target:{kind:'payoff'},date:p.date,amt:p.amt,pen:p.pen,fine:p.fine||0,method:p.method,fees:p.fees,source:p.source||p.qr,t:d.lease?'buyout':'early',d});
 if(d.refund)r.push({date:d.refund_date||d.closed||d.start,amt:-d.refund,pen:0,method:'',t:'ref',d})});return r}
 const rates=e=>e.method=='СБП'?(e.fees||{acq:AQ(),receipt:RC(),estimated:true}):{acq:0,receipt:0};
 const feeMoney=value=>cents(C.minor(value));
@@ -1276,7 +1427,9 @@ function transactions(items=events()){
     const grouped=new Map();
     items.forEach((e,index)=>{
         const key=JSON.stringify([e.d.id,e.date,e.method,e.source??index]);
-        const record=grouped.get(key)||{date:e.date,deal:e.d,method:e.method,cash:0,rates:rates(e),estimated:false};
+        const record=grouped.get(key)||{date:e.date,deal:e.d,method:e.method,cash:0,rates:rates(e),estimated:false,target:e.target};
+        if(e.target?.kind==='period')record.target=e.target;
+        if(e.t==='down')record.includesAdvance=true;
         record.cash+=C.minor(e.amt)+C.minor(e.pen);
         record.estimated ||= !!rates(e).estimated;
         grouped.set(key,record);
@@ -1303,15 +1456,21 @@ function receiptTotals(items){
 }
 const expensesIn=(a,b)=>(S.expenses||[]).filter(expense=>expense.date>=a&&expense.date<=b);
 const expenseCents=(a,b)=>expensesIn(a,b).reduce((sum,expense)=>sum+C.minor(expense.amt),0);
-function sumR(a,b){
+function sumR(a,b,accounts=ledger()){
     const R=receiptTotals(events().filter(e=>e.date>=a&&e.date<=b));
-    let repair=0,lost=0,lostN=0,gifts=0;
+    let repair=0,investment=0,lost=0,lostN=0,gifts=0;
+    for(const lines of Object.values(accounts)){
+        for(const [date,amount,kind] of lines){
+            if(date<a||date>b)continue;
+            if(kind==='repair')repair-=amount;
+            if(kind==='purchase'||kind==='preparation'||kind==='extra')investment-=amount;
+            if(kind==='gift')gifts-=amount;
+        }
+    }
     for(const bike of S.bikes){
-        for(const x of bike.exp||[])if(x.date>=a&&x.date<=b)repair+=C.minor(x.amt);
         if(bike.wo&&bike.wo.date>=a&&bike.wo.date<=b){lost+=C.minor(bike.wo.loss||0);lostN++}
     }
-    for(const d of S.deals)if(d.start>=a&&d.start<=b)gifts+=C.minor(giftCost(d));
-    return {...R,exp:C.money(repair),lost:C.money(lost),lostN,gifts:C.money(gifts),overhead:C.money(expenseCents(a,b))};
+    return {...R,exp:C.money(repair),investment:C.money(investment),lost:C.money(lost),lostN,gifts:C.money(gifts),overhead:C.money(expenseCents(a,b))};
 }
 const giftLabel=d=>d.gift?.name?`Подарок · ${esc(d.gift.name)}`:'Подарок клиенту';
 function dealFinancials(d){
@@ -1343,18 +1502,24 @@ function togPer(){repOpen=!repOpen;const h=$('.rpd');if(!h)return;h.classList.to
 function setPer(p){repP=p;repOpen=false;hap();render()}
 function firstDate(){let f=C.today();S.deals.forEach(d=>{if(d.start&&d.start<f)f=d.start;Object.values(d.paid||{}).forEach(p=>{if(p.date&&p.date<f)f=p.date})});S.bikes.forEach(k=>{const c=k.created&&k.created.slice(0,10);if(c&&c<f)f=c;(k.exp||[]).forEach(x=>{if(x.date<f)f=x.date})});for(const e of S.expenses||[])if(e.date<f)f=e.date;return f}
 /* Each line of a bike's ledger is in kopecks. */
-const COST_TYPES=new Set(['purchase','extra','repair','gift']);
+const COST_TYPES=new Set(['purchase','preparation','extra','repair','gift']);
 function ledger(){
-    const today=C.today(),L={},first={},add=(id,date,amount,kind)=>{(L[id]??=[]).push([date,amount,kind])};
-    S.deals.forEach(d=>useSegs(d).forEach(segment=>{if(!first[segment.bike]||segment.from<first[segment.bike])first[segment.bike]=segment.from}));
+    const L={},first=new Map(),add=(id,date,amount,kind)=>{(L[id]??=[]).push([date,amount,kind])};
+    for(const d of S.deals){
+        useSegs(d).forEach(({bike,from},index)=>{
+            if(!first.has(bike)||from<first.get(bike).date)
+                first.set(bike,{date:from,cost:index===0?d.cost:null});
+        });
+    }
     for(const e of transactions()){
-        const id=bikeAt(e.deal,e.date);
-        add(id,e.date,e.cash-C.minor(e.tax)-C.minor(e.acq)-C.minor(e.receipt),e.cash>=0?'receipt':'refund');
-        if(!first[id]||e.date<first[id])first[id]=e.date;
+        add(bikeAt(e.deal,e.date),e.date,e.cash-C.minor(e.tax)-C.minor(e.acq)-C.minor(e.receipt),e.cash>=0?'receipt':'refund');
     }
     for(const b of S.bikes){
-        add(b.id,[b.created?.slice(0,10),first[b.id]].filter(Boolean).sort()[0]||today,-C.minor(recordedBikeCost(b)),'purchase');
-        for(const e of b.exp||[])add(b.id,e.date,-C.minor(e.amt),'repair');
+        const issue=first.get(b.id);
+        if(!issue)continue;
+        add(b.id,issue.date,-C.minor(issue.cost??b.cost??0),'purchase');
+        for(const e of b.exp||[])add(b.id,e.date<=issue.date?issue.date:e.date,-C.minor(e.amt),
+            e.date<=issue.date?'preparation':'repair');
     }
     for(const d of S.deals){
         const extra=exc(d),gift=giftCost(d);
@@ -1398,6 +1563,18 @@ function profList(p,pf,first){
 function feeHistory(a,b){
     const operations=transactions().filter(e=>e.method=='СБП'&&e.date>=a&&e.date<=b).sort((a,b)=>b.date.localeCompare(a.date));
     return fold(`Комиссии по платежам${operations.length?' · '+operations.length:''}`,operations.length?`<div class=table-scroll><table class=data-table><thead><tr><th>Платёж</th><th>Сумма</th><th>Банк</th><th>Чек</th></tr></thead><tbody>${operations.map(e=>`<tr><th><button class=un onclick="go('deal','${e.deal.id}')">${fmt(e.date)}</button><br><small>${esc(nm(e.deal.client))}${e.estimated?' · оценка':''}</small></th><td>${m(e.amount)}</td><td>${feeMoney(e.acq)}</td><td>${feeMoney(e.receipt)}</td></tr>`).join('')}</tbody></table></div>`:empty('receipt','Поступлений по СБП за период нет'));
+}
+function receiptHistory(a,b){
+    const rows=transactions().filter(e=>e.amount>0&&e.date>=a&&e.date<=b).sort((x,y)=>y.date.localeCompare(x.date));
+    return fold('Поступления · история',rows.length?`<div class=grp>${rows.map(e=>{
+        const d=e.deal,target=e.target;
+        const remove=can('pay')&&target&&!e.includesAdvance&&d.status==='active'&&(target.kind==='payoff'?
+            !d.deposit_refund&&(!d.payoff?.qr||d.lease&&isOwner()):!d.payoff);
+        const action=target?.kind==='period'?`unpay('${d.id}',${Number(target.period)})`:target?.kind==='debt'?
+            `unDebt('${d.id}')`:`cancelEarlyBuyout('${d.id}')`;
+        return `<div class="row nl"><span class=tx><b>${m(e.amount)}</b><span>${fmt(e.date)} · ${esc(e.method)} · ${esc(nm(d.client))}</span></span>
+            ${remove?`<button class="btn sec sm" onclick="${action}">Снять с учёта</button>`:''}</div>`;
+    }).join('')}</div>`:empty('receipt','Поступлений за период нет'));
 }
 function rentalDeposits(a,b){
     let received=0,returned=0,held=0,balance=0,hasDeposits=false;
@@ -1454,12 +1631,12 @@ async function deleteExpense(id){
     try{await api('/api/del',{kind:'expense',id,version:e._v||0});await load(true);back();toast('Расход удалён')}
     catch(error){uiAlert(error==='conflict'?'Расход изменился. Откройте его заново.':error.message||error)}
 }
-function repR(){const p=curP(),[a,b]=rng(p),R=sumR(a,b),all=sumR(...rng('all')),A=act().map(d=>({d,I:info(d)})).filter(x=>x.I.od.length),L=ledger(),pf=profFn(L),first=firstDate(),PR=pf(a,b),back=investmentRecovered(L,a,b);
-const inv=S.bikes.reduce((s,k)=>s+recordedBikeCost(k)+EXP(k),0)+S.deals.reduce((s,d)=>s+exc(d),0)+all.gifts,DL=act().map(d=>({d,g:info(d).g})).filter(x=>x.g);
+function repR(){const p=curP(),[a,b]=rng(p),L=ledger(),R=sumR(a,b,L),all=sumR(...rng('all'),L),A=act().map(d=>({d,I:info(d)})).filter(x=>x.I.od.length),pf=profFn(L),first=firstDate(),PR=pf(a,b),back=investmentRecovered(L,a,b);
+const inv=all.investment+all.exp+all.gifts,DL=act().map(d=>({d,g:info(d).g})).filter(x=>x.g);
 const debt=A.reduce((s,x)=>s+x.I.od.reduce((q,y)=>q+y.amt,0),0),pen=A.reduce((s,x)=>s+x.I.pen,0),fine=A.reduce((s,x)=>s+x.I.fine,0),lostAll=S.bikes.reduce((s,k)=>s+((k.wo&&k.wo.loss)||0),0),wl=S.bikes.filter(k=>k.wo&&k.wo.date>=a&&k.wo.date<=b);
 return perBox(p,pf,first)+
 `<div class="card tint"><div class=mu>Чистая прибыль, ${p=='all'?'всё время':pLab(p).toLowerCase()}</div><div class=big${PR<0?' style="color:var(--ert)"':''}>${m(PR)}</div>${kv('Получено',m(R.net))}${kv(`Налог ${pc(TX())}%`,'−'+m(R.tax))}${kv('Эквайринг','−'+feeMoney(R.acq))}${kv('Чеки по СБП','−'+feeMoney(R.receipt))}${kv('Из поступлений пошло на окупаемость',m(back))}${R.overhead?kv('Разовые расходы','−'+m(R.overhead)):''}</div>
-<p class=sub>Поступления покрывают закупку, оборудование, обслуживание и подарки клиентам. Разовые расходы вычитаются в день оплаты.${lostAll?' Убытки по списаниям показаны ниже.':''}</p>
+<p class=sub>Закупка и подготовка учитываются в день первой выдачи комплекта. Последующее обслуживание учитывается по дате расхода. Разовые расходы вычитаются в день оплаты.${lostAll?' Убытки по списаниям показаны ниже.':''}</p>
 ${profList(p,pf,first)}
 <div class=card><div class=mu>Получено за период</div><div class=mid>${m(R.net)}</div>
     ${R.rent||R.pay?kv('Платежи по графику',m(C.money(C.minor(R.rent)+C.minor(R.pay)))):''}
@@ -1468,8 +1645,8 @@ ${profList(p,pf,first)}
     ${kv('Штрафы и неустойки',m(R.pen))}${R.fine?kv('Из них штрафы',m(R.fine)):''}${dailyCharge(R)?kv('Из них неустойка',m(dailyCharge(R))):''}${R.ref?kv('Возвраты клиентам','−'+m(R.ref)):''}</div>
 ${rentalDeposits(a,b)}
 <div class=card><b>По способам оплаты</b>${Object.keys(R.by).length?bars(Object.keys(R.by).map(k=>[esc(k),R.by[k]])):'<p class=mu style="margin:8px 0 0">Платежей нет</p>'}</div>
-<div class=card><b>Налог, эквайринг и расходы</b>${kv(`Налог ${pc(TX())}% (отложить)`,m(R.tax))}${kv('Эквайринг по СБП',feeMoney(R.acq))}${kv('Формирование чеков по СБП',feeMoney(R.receipt))}${kv('Расходы на обслуживание',m(R.exp))}${kv('Подарки клиентам',m(R.gifts))}${R.overhead?kv('Разовые расходы',m(R.overhead)):''}${R.lostN?kv(`Убыток от списаний (${R.lostN})`,m(R.lost)):''}${kv('Остаётся без учёта закупки',m(R.net-R.tax-R.acq-R.receipt-R.exp-R.gifts-R.overhead))}</div>
-${expensesCard(a,b,R.overhead)}${feeHistory(a,b)}
+<div class=card><b>Налог, эквайринг и расходы</b>${kv(`Налог ${pc(TX())}% (отложить)`,m(R.tax))}${kv('Эквайринг по СБП',feeMoney(R.acq))}${kv('Формирование чеков по СБП',feeMoney(R.receipt))}${kv('Вложения при выдаче',m(R.investment))}${kv('Расходы на обслуживание',m(R.exp))}${kv('Подарки клиентам',m(R.gifts))}${R.overhead?kv('Разовые расходы',m(R.overhead)):''}${R.lostN?kv(`Убыток от списаний (${R.lostN})`,m(R.lost)):''}${kv('Остаток после расходов периода',m(R.net-R.tax-R.acq-R.receipt-R.investment-R.exp-R.gifts-R.overhead))}</div>
+${receiptHistory(a,b)}${expensesCard(a,b,R.overhead)}${feeHistory(a,b)}
 ${can('pay')?`<div class=acts><button class="btn sec blk" onclick="go('statementS')">Сверка СБП с выпиской</button></div>`:''}
 ${wl.length?`<div class=card><b>Списано за период</b>${wl.map(k=>kv(`${esc(k.name)}, ${esc(k.wo.reason)}`,m(k.wo.loss))).join('')}</div>`:''}
 <div class=card><b>Весь парк за всё время</b>${kv('Вложено (закупка, оборудование, обслуживание, подарки)',m(inv))}${kv('Получено от клиентов',m(all.net))}${kv('Разница',m(all.net-inv))}${lostAll?kv('В том числе убытки по списанным',m(lostAll)):''}</div>
@@ -1535,7 +1712,7 @@ function parkInvestments(){
         const {inv,remaining}=bikeStat(b,balances);
         rows.get(key).push({invested:inv,remaining});
     });
-    return fold('Вложения в парк',`<div class=table-scroll><table class=data-table><thead><tr><th>Состояние</th><th>Вложено</th><th>До окупаемости</th></tr></thead><tbody>${[...rows].map(([name,L])=>`<tr><th>${name} · ${L.length}</th><td>${m(L.reduce((a,x)=>a+x.invested,0))}</td><td>${m(L.reduce((a,x)=>a+x.remaining,0))}</td></tr>`).join('')}</tbody></table></div><p class=sub>Вложения включают закупку, допы и обслуживание. Остаток до окупаемости считается отдельно для каждого велосипеда с учётом полученных денег, налога и комиссий.</p>`);
+    return fold('Вложения в парк',`<div class=table-scroll><table class=data-table><thead><tr><th>Состояние</th><th>Вложено</th><th>До окупаемости</th></tr></thead><tbody>${[...rows].map(([name,L])=>`<tr><th>${name} · ${L.length}</th><td>${m(L.reduce((a,x)=>a+x.invested,0))}</td><td>${m(L.reduce((a,x)=>a+x.remaining,0))}</td></tr>`).join('')}</tbody></table></div><p class=sub>Вложения учитываются с первой выдачи. В них входят закупка, оборудование, подготовка и последующее обслуживание. Остаток до окупаемости считается отдельно для каждого велосипеда с учётом полученных денег, налога и комиссий.</p>`);
 }
 function forecast(){
     const t=C.today(),year=+t.slice(0,4),month=+t.slice(5,7),risky=new Set(disc(false).filter(o=>o.n>=3&&o.late>=2&&o.late*2>=o.n).map(o=>o.c));
@@ -1588,7 +1765,7 @@ function rentalForecastPanel(lease,cost){
             <div><dt>Остаток после 4 недель</dt><dd>${m(lease.price-lease.weekly*4)}</dd></div>
             <div><dt>Остаток после ${lease.weeks-1} недель</dt><dd>${m(lease.price-lease.weekly*(lease.weeks-1))}</dd></div>
         </dl>${recovery?kv('Окупаемость закупки одной арендой',recovery+' '+plur(recovery,'неделя','недели','недель')):''}
-        ${cost?'<p class=sub>Прогноз при оплатах по СБП. Обеспечение учитывается отдельно.</p>':'<p class=sub>Укажите закупку велосипеда и АКБ или стоимость готового комплекта.</p>'}`;
+        ${cost?'<p class=sub>Прогноз при оплатах по СБП. Обеспечение учитывается отдельно.</p>':'<p class=sub>Укажите закупку велосипеда и каждого аккумулятора в каталоге.</p>'}`;
 }
 const openCatalogGroups=new Set(['']);
 const catalogId=prefix=>prefix+Array.from(crypto.getRandomValues(new Uint8Array(6)),byte=>byte.toString(16).padStart(2,'0')).join('');
@@ -1736,7 +1913,6 @@ function tariffsS(){
             <div class=f2>${cashInput('Итого при выкупе, ₽','rent-price',price,'oninput="updateRentalTariff(this)"')}
             ${cashInput('Плата за неделю, ₽','rent-weekly',weekly,'oninput="updateRentalTariff(this)"')}</div>
             ${cashInput('Обеспечительный платёж, ₽','rent-deposit',deposit,'oninput="updateRentalTariff(this)"')}
-            ${cashInput('Закупка готового комплекта, ₽','rent-kit',draft?.kit??entry.kitCosts?.[key]??'','placeholder="По сумме велосипеда и АКБ" oninput="updateRentalTariff(this)"',0.01)}
             <div data-rental-forecast aria-live=polite>${forecast}</div>
             <button type=button class="btn blk" onclick="saveRentalTariff(this)">Сохранить тариф</button>
             ${saved?`<button type=button class="btn sec blk" onclick="saveRentalTariff(this,true)">Удалить тариф</button>`:''}
@@ -1750,33 +1926,28 @@ function updateRentalTariff(input){
         const result=C.rentalPrice(+input.value,tariffWeeks,field);
         $('#rent-'+other).value=result?.[other]??'';
     }
-    const draft={price:v('#rent-price'),weekly:v('#rent-weekly'),deposit:v('#rent-deposit'),kit:v('#rent-kit')};
+    const draft={price:v('#rent-price'),weekly:v('#rent-weekly'),deposit:v('#rent-deposit')};
     tariffDrafts.set(key,draft);
-    const components=rentalModel(tariffModel),parts=slots.map(slot=>components.batteries[slot]);
-    const cost=draft.kit?+draft.kit:components.cost&&parts.every(b=>b?.cost)?
-        C.money(C.minor(components.cost)+parts.reduce((sum,b)=>sum+C.minor(b.cost),0)):0;
+    const cost=rentalCost(tariffModel,slots);
     $('[data-rental-forecast]').innerHTML=rentalForecastPanel({weeks:tariffWeeks,weekly:+draft.weekly,price:+draft.price},cost);
 }
 async function saveRentalTariff(button,remove=false){
     const version=S.cfg._v||0;
     const root=button.closest('fieldset'),slots=tariffSlots,key=C.rentalKey(slots);
     const draftKey=tariffDraftKey(tariffModel,slots,tariffWeeks),draft=tariffDrafts.get(draftKey),entry=rentalModel(tariffModel);
-    const price=+v('#rent-price'),weekly=+v('#rent-weekly'),deposit=+v('#rent-deposit'),kit=+v('#rent-kit');
+    const price=+v('#rent-price'),weekly=+v('#rent-weekly'),deposit=+v('#rent-deposit');
     if(remove){
         if(!await uiConfirm('Тариф станет недоступен для новых выдач.','Удалить',{title:'Удалить тариф?',danger:true}))return;
     }else if(!weekly||!price||[...root.querySelectorAll('input')].some(input=>!input.checkValidity())){
         return uiAlert('Укажите суммы в целых рублях.');
     }
     if((S.cfg._v||0)!==version)return uiAlert('Каталог изменился. Откройте тариф заново.');
-    const plans={...entry.plans,[key]:{...entry.plans[key]}},kitCosts={...entry.kitCosts};
+    const plans={...entry.plans,[key]:{...entry.plans[key]}};
     if(remove){delete plans[key][tariffWeeks];if(!Object.keys(plans[key]).length)delete plans[key]}
-    else{
-        plans[key][tariffWeeks]={price,weekly,deposit};
-        if(kit)kitCosts[key]=kit;else delete kitCosts[key];
-    }
+    else plans[key][tariffWeeks]={price,weekly,deposit};
     root.disabled=true;tariffDrafts.delete(draftKey);
     try {
-        await writeModel(tariffModel,{...entry,plans,kitCosts});
+        await writeModel(tariffModel,{...entry,plans});
         toast(remove?'Тариф удалён':'Тариф сохранён');
     }catch(error){
         if(draft)tariffDrafts.set(draftKey,draft);
@@ -1792,7 +1963,8 @@ function set(){
         <button type=button class=row onclick="go('tariffsS')"><span class=gl>${ic('calc')}</span>
         <span class=tx><b>Тарифы аренды с правом выкупа</b><span>Недельная плата, цена выкупа и прибыль</span></span>${ic('right')}</button></div>`;
     const payments=form('payments',`${input('pen','Неустойка, % в день',pn)}
-        <p class=sub>При полной неоплате на ${C.LATE_FEE_DAY}-й день начисляется разовый штраф ${m(C.LATE_FEE_AMOUNT)}, с ${C.UNPAID_PENALTY_DAY}-го дня идёт неустойка.
+        ${cashInput('Разовый штраф для новых договоров, ₽','default_fine_amount',S.cfg.default_fine_amount??C.LATE_FEE_AMOUNT)}
+        <p class=sub>Разовый штраф начисляется на ${C.LATE_FEE_DAY}-й день полной неоплаты. 0 ₽ отключает штраф. С ${C.UNPAID_PENALTY_DAY}-го дня идёт неустойка.
         При частичной оплате остаток можно внести до конца ${C.PARTIAL_GRACE_DAYS}-го дня после даты платежа.</p>
         ${S.deals.some(deal=>!deal.lease&&deal.status==='active')?`<details><summary>Условия ранее выданных договоров</summary>
             ${input('dmin','Минимальная частичная оплата, %',DM(),50,100,1)}</details>`:''}`);
@@ -1808,7 +1980,7 @@ function set(){
         <button class="btn sec" onclick="$('#rf').click()">${ic('up','s')}Восстановить</button></div>
         <input id=rf type=file accept=".json,application/json" hidden onchange="restoreFile(this)"></div>`;
     const log=`<div class=grp><button class="row nl" onclick="go('logS')"><span class=gl>${ic('list')}</span><span class=tx><b>Открыть журнал действий</b><span>Кто и что менял</span></span>${ic('right')}</button></div>`;
-    return `<div class=hd><div><small>Версия 30</small><h1>Настройки</h1></div></div>`
+    return `<div class=hd><div><small>Версия 32</small><h1>Настройки</h1></div></div>`
         +tariffs
         +settingSection('payments','Платежи, штрафы и неустойка',payments)
         +settingSection('fees','Налог и комиссии',fees)
@@ -1832,7 +2004,7 @@ if(v('#cphone').trim()&&!/^\+?\d{7,15}$/.test(phone))return uiAlert('Прове�
 await put('cfg',{...S.cfg,id:'cfg',ctg:tg,cmx:mx,cphone:phone});hap('success');toast('Контакты сохранены')}
 async function setNtf(k,el){const on=el.checked;await put('cfg',{...S.cfg,id:'cfg',[k]:on});toast(on?'Включено':'Выключено')}
 async function saveSet(group){
-    const idList={payments:['pen','dmin'],fees:['tax','acq','receipt']}[group];
+    const idList={payments:['pen','default_fine_amount','dmin'],fees:['tax','acq','receipt']}[group];
     if(!idList)return;
     const fields=idList.map(id=>document.getElementById(id)).filter(Boolean);
     const edited=Object.fromEntries(fields.map(input=>[input.id,+input.value]));
@@ -1875,6 +2047,7 @@ const journalActions={
     'pay-early-buyout':['payment','Принят досрочный выкуп'],'enable-early-buyout':['deal','Подключён досрочный выкуп'],
     'cancel-early-buyout':['payment','Отменена отметка о досрочном выкупе'],
     'pay-periods':['payment','Принят платёж по графику'],'pay-qr':['payment','Принята оплата по QR'],
+    'deal-fine':['deal','Изменён размер штрафа'],'qr-accounting-void':['payment','Оплата по QR снята с учёта'],
     'pay-debt':['payment','Оплачен долг'],'cancel-payment':['payment','Отменён платёж'],
     'cancel-debt-pay':['payment','Отменена оплата долга'],'move-payment':['payment','Платёж перенесён'],
     'qr':['payment','Создан QR для оплаты'],'qr-paid':['payment','Оплата QR подтверждена'],
@@ -1988,7 +2161,8 @@ function journalFields(data,kind,action){
         if(['string','number','boolean'].includes(typeof data[key]))set(label,data[key],format);
     }
     if(kind==='expense')set('Описание расхода',data.text);
-    set('Штраф по договору',data.late_fee?.amount,m);
+    set('Штраф по договору',data.lease||data.fine_rates?C.fineAmount(data,C.add(C.today(),1)):undefined,m);
+    set('Штраф для новых договоров',data.default_fine_amount,m);
     set('День просрочки для штрафа',data.late_fee?.day);
     set('Клиент',data.client,id=>S.clients.find(item=>item.id==id)?.name||id);
     set('Велосипед',data.bike,id=>S.bikes.find(item=>item.id==id)?.name||id);
@@ -2177,6 +2351,7 @@ const st=(cls,ico,txt)=>{const e=o.querySelector('#qs');e.className='note '+cls;
 const stop=()=>{clearInterval(timer);o.querySelectorAll('[data-l],[data-v],[data-s],[data-c],.qh').forEach(e=>e.style.display='none');const i=o.querySelector('.qrimg,.qrbox svg');if(i)i.style.opacity='.25'};
 const updateQR=x=>{
     if(x.status=='paid'){hap('success');st('t-ok','check','<b>Оплата подтверждена банком</b>');stop();return true}
+    if(x.status=='void'){st('t-wa','alert','Оплата снята с учёта. Если банк списал деньги, свяжитесь с нами.');stop();return true}
     if(x.status=='review'||x.status=='duplicate'){st('t-wa','alert','Операция проверяется по выписке. Если деньги уже ушли, свяжитесь с нами.');stop();return true}
     if(x.status!='open'||x.date<C.today()||x.expires&&Date.parse(x.expires)<=Date.now()){
         st('t-n','','Срок QR истёк. Если деньги уже списаны, дождитесь проверки или сообщите об оплате.');stop();return true
@@ -2196,7 +2371,13 @@ const partialDeadlineText=()=>`Срок доплаты — до конца ${C.P
 const partialChargeText=d=>`До этого срока на остаток ничего не начисляется. С ${C.PARTIAL_GRACE_DAYS+1}-го дня на остаток начисляется только ежедневная неустойка (${pc(d.pen??0.9)}% в день).`;
 const partialExample='Если платёж по графику 20-го, а первую половину внесли 22-го, на доплату остаются 23-е и 24-е. С 25-го неустойка считается на остаток.';
 const priorChargesText='Если к первой оплате штраф или неустойка уже начислены, они входят в первый платёж.';
-const unpaidChargesText=()=>`Первые ${C.LATE_FEE_DAY-1} дня после даты платежа проходят без начислений. При полной неоплате на ${C.LATE_FEE_DAY}-й день начисляется разовый штраф ${m(C.LATE_FEE_AMOUNT)}, а с ${C.UNPAID_PENALTY_DAY}-го дня — ежедневная неустойка по ставке договора.`;
+const unpaidChargesText=d=>{
+    const amount=C.fineAmount(d);
+    const next=(d.fine_rates||[]).find(change=>change.from>C.today());
+    const fine=amount?`При полной неоплате на ${C.LATE_FEE_DAY}-й день начисляется разовый штраф ${m(amount)}.`:'Разовый штраф сейчас не начисляется.';
+    return `Первые ${C.LATE_FEE_DAY-1} дня после даты платежа проходят без начислений. ${fine}
+        С ${C.UNPAID_PENALTY_DAY}-го дня начисляется ежедневная неустойка по ставке договора.${next?` С ${fmt(next.from)} размер штрафа — ${m(next.amount)}.`:''}`;
+};
 function partialPaymentHelp(id){
     const d=dealById(id),settings=ME.role=='client'?ME:S.cfg;
     const first=d.lease?'Внесите 50% за ближайший период. Вторую половину доплатите одним платежом.':
@@ -2298,7 +2479,7 @@ async function enableEarlyBuyout(id){
 }
 async function cancelEarlyBuyout(id){
     const d=dealById(id);
-    if(!d||!await uiConfirm('График платежей и остаток по нему снова откроются. Подтвердите, если отметка была внесена ошибочно.','Отменить отметку'))return;
+    if(!d||!await uiConfirm('График платежей и остаток по нему снова откроются. Подтвердите, если отметка была внесена ошибочно.'+(d.payoff?.method==='СБП'?' Банковская операция останется в выписке.':''),'Отменить отметку'))return;
     try{
         await api('/api/early-buyout',{deal:id,do:'cancel',version:d._v||0});
         await load();toast('Отметка отменена');
@@ -2859,7 +3040,7 @@ function cabinetMemo(d){
         <p><b>Оплата.</b> ${payment}</p>
         ${d.lease?`<p><b>Уменьшение цены выкупа.</b> ${rentalReductionRule()} Накопленная сумма видна в разделе выкупа. В расчёт входят только платежи за аренду.</p>`:''}
         <p><b>Оплата через СБП.</b> Выберите «Оплатить в своём банке» или скачайте QR-код в PNG. Загрузите его в разделе оплаты по QR своего банка, если там доступен выбор картинки.</p>
-        <p><b>Полная неоплата.</b> ${unpaidChargesText()}</p>
+        <p><b>Полная неоплата.</b> ${unpaidChargesText(d)}</p>
         <p><b>Оплата частями.</b> ${partial} ${partialDeadlineText()} ${partialChargeText(d)}</p>
         <p><b>Пример.</b> ${partialExample} ${priorChargesText}</p>
         <p><b>График.</b> Здесь видны даты, суммы, статус оплаты и срок доплаты.</p>
