@@ -36,7 +36,7 @@ def tariff_key(model,batteries):
 
 BIKE_TARIFF_KEYS={tariff_key(model,count) for model in BIKE_MODELS for count in BATTERY_COUNTS}
 WEEKLY_TERMS=(8,12,16,20,26)
-RENTAL_WEEKS=(20,26)
+RENTAL_WEEKS=(26,)
 RENTAL_BUYOUT_REDUCTION_RATE=2
 LATE_FEE_AMOUNT=350
 LATE_FEE_DAY=3
@@ -173,7 +173,7 @@ def payment_public(deal):
         return {k: v for k, v in p.items() if k not in ('fees', 'source')}
     return {k: deal.get(k) for k in (
         'n','start','pay','last','shift','defer','pen','status','contract','type','debt','pw','np',
-        'schedule','bonuses','completed_at','closed','signed_at','client_rescheduled','_v',
+        'schedule','bonuses','completed_at','closed','signed_at','client_rescheduled','_v','fine_rates',
     )} | {
         'paid': {k: public(p) for k,p in (deal.get('paid') or {}).items()},
         'early': [public(p) for p in deal.get('early') or []],
@@ -336,6 +336,7 @@ def validate_backup(records,bindings):
             if not isinstance(data.get('paid'),dict):raise Bad(f'В копии повреждены оплаты выкупа {identifier}.')
             for field in ('dpays','early','bonuses','extras'):objects(data,field)
             if 'gift' in data:data['gift']=validate_gift(data['gift'])
+            validate_fine_rates(data)
             if 'lease' in data:validate_rental_record(data)
             if 'payoff_terms' in data:validate_payoff_terms(data)
             if 'payoff' in data:validate_payoff_record(data)
@@ -373,6 +374,7 @@ def validate_backup(records,bindings):
         elif kind in ('client','bike','admin'):
             if not isinstance(data.get('name'),str):raise Bad(f'В копии отсутствует имя записи {identifier}.')
             if kind=='bike':
+                if 'default_fine_amount' in data:late_fee_record(data['default_fine_amount'],LATE_FEE_DAY)
                 if 'cost' in data:amount(data['cost'])
                 if 'batteries' in data and not valid_batteries(data['batteries']):
                     raise Bad('В копии повреждена комплектация велосипеда.')
@@ -382,6 +384,7 @@ def validate_backup(records,bindings):
                     valid_date(data['wo'].get('date'));amount(data['wo'].get('loss',0))
         elif kind=='expense':validate_expense(data)
         elif kind=='cfg':
+            if 'default_fine_amount' in data:late_fee_record(data['default_fine_amount'],LATE_FEE_DAY)
             if data.get('mk') and not isinstance(data['mk'].get('w'),dict):raise Bad('В копии повреждены тарифы.')
             if data.get('ds') and not all(isinstance(x,list) and len(x)==2 for x in data['ds']):raise Bad('В копии повреждены скидки.')
             if 'tariffs' in data:validate_tariffs(data['tariffs'], restoring=True)
@@ -506,11 +509,27 @@ def dstat(d,T):
     b=max(g['due'],g.get('pb') or '',first);n=pdays(b,T,d);pe=penalty(g['amt'],n,d.get('pen'))
     return {'amt':g['amt'],'due':g['due'],'k':g['k'],'days':n,'pen':pe,'total':money(minor(g['amt'])+minor(pe)),'late':max(0,diff(T,g['due'])),'over':T>g['due'],'base':b}
 
+def fine_amount(d,date):
+    return next((change['amount'] for change in reversed(d.get('fine_rates') or [])
+                 if change['from']<=date),LATE_FEE_AMOUNT)
+
+def validate_fine_rates(d):
+    changes=d.get('fine_rates',[])
+    if not isinstance(changes,list):raise Bad('Проверьте историю размера штрафа.')
+    previous=''
+    for change in changes:
+        if not isinstance(change,dict):raise Bad('Проверьте историю размера штрафа.')
+        date=valid_date(change.get('from'))
+        if date<=previous or date<d['start']:raise Bad('Проверьте дату изменения штрафа.')
+        if type(change.get('amount')) is not int:raise Bad('Укажите штраф в целых рублях.')
+        late_fee_record(change['amount'],LATE_FEE_DAY)
+        previous=date
+
 def installment_charges(d,period,date,*,legacy_rental_grace=None):
     limit=payment_deadline(d,period)
     if legacy_rental_grace is None:
         grace=UNPAID_PENALTY_DAY-1
-        late={'amount':LATE_FEE_AMOUNT,'day':LATE_FEE_DAY}
+        late={'amount':fine_amount(d,add(limit,LATE_FEE_DAY)),'day':LATE_FEE_DAY}
     else:
         grace=legacy_rental_grace if d.get('lease') else 0
         late=d.get('late_fee') or {}
@@ -750,7 +769,7 @@ def known_bike_model(model):
     return catalog_id(model) and (model in BIKE_MODELS or model in cfgv('rentalModels',{}))
 
 def rental_terms(model,slots,weeks):
-    if type(weeks) is not int or weeks not in RENTAL_WEEKS:raise Bad('Выберите срок аренды, 20 или 26 недель.')
+    if type(weeks) is not int or weeks not in RENTAL_WEEKS:raise Bad('Для новых выдач доступен срок 26 недель.')
     key=rental_key(slots)
     settings=doc('cfg') or {}
     if model in settings.get('catalogArchivedModels',[]):raise Bad('Эта модель удалена из каталога.')
@@ -758,9 +777,7 @@ def rental_terms(model,slots,weeks):
     plan=entry.get('plans',{}).get(key,{}).get(str(weeks))
     if not plan:raise Bad('Сохраните тариф для выбранной комплектации и срока в настройках.')
     batteries=[entry['batteries'][str(slot)] for slot in slots]
-    cost=entry.get('kitCosts',{}).get(key)
-    if cost is None:
-        cost=money(minor(entry['cost'])+sum(minor(b['cost']) for b in batteries)) if entry['cost'] and all(b['cost'] for b in batteries) else 0
+    cost=money(minor(entry['cost'])+sum(minor(b['cost']) for b in batteries)) if entry['cost'] and all(b['cost'] for b in batteries) else 0
     terms={**plan,'model':model,'modelName':entry['name'],'brandName':settings.get('rentalBrands',{}).get(entry['brand'],''),
            'slots':slots,'weeks':weeks,
            'batteries':[rental_battery(b,with_cost=False) for b in batteries]}
@@ -1145,7 +1162,7 @@ def reschedule_details(plan):
         'first', 'firstAmount', 'pay', 'balance', 'last', 'lastAmount', 'previous', 'gap', 'step'
     )}
 
-def fingerprint(d):
+def fingerprint(d,date=None):
     fields=('status','schedule','n','start','type','pay','last','paid','early','shift','pen','pw','np','debt','dpays','bonuses')
     data={k:d.get(k) for k in fields}
     # Migrating fee records does not invalidate a QR printed before the update.
@@ -1156,6 +1173,9 @@ def fingerprint(d):
     if grants:data['deferrals']=grants
     if d.get('lease'):data['lease']=d['lease']
     if d.get('late_fee'):data['late_fee']=d['late_fee']
+    as_of=date or tod()
+    applied=[change for change in d.get('fine_rates') or [] if change['from']<=as_of]
+    if applied:data['fine_rates']=applied
     for field in ('payoff_terms','payoff'):
         if d.get(field):data[field]=d[field] if field=='payoff_terms' else payment_public(d)[field]
     return hashlib.sha256(json.dumps(data,sort_keys=True).encode()).hexdigest()
@@ -1663,7 +1683,7 @@ def on_paid(qid,q,payment=None):
     q.update(status='paid',fees=fee_rates('СБП'),paidDate=t,bankTime=bank_time)
     put_srv(qid,'qr',q,'qr-paid','',old)
     d=doc(q['deal']);left=q['amt'];why='Оплата пришла после изменений в выкупе или не в день создания QR.';ok=False
-    if d and d.get('status')=='active' and t==q['date'] and (not q.get('fingerprint') or q['fingerprint']==fingerprint(d)):
+    if d and d.get('status')=='active' and t==q['date'] and (not q.get('fingerprint') or q['fingerprint']==fingerprint(d,t)):
         d2=copy.deepcopy(d)
         try:
             if q['kind']=='payoff':
@@ -2040,7 +2060,7 @@ def validate_rental_record(d):
 def validate_new_rental(d,t):
     start=received_date(d.get('start'),t);lease=d.get('lease')
     if not isinstance(lease,dict) or not known_bike_model(lease.get('model')):raise Bad('Выберите модель велосипеда.')
-    if type(lease.get('weeks')) is not int or lease['weeks'] not in RENTAL_WEEKS:raise Bad('Выберите срок тарифа, 20 или 26 недель.')
+    if type(lease.get('weeks')) is not int or lease['weeks'] not in RENTAL_WEEKS:raise Bad('Для новых выдач доступен срок 26 недель.')
     record=row(d.get('bike'))
     bike=record[1] if record and record[0]=='bike' else {}
     if bike.get('model')!=lease['model']:raise Bad('Модель в тарифе должна совпадать с велосипедом.')
@@ -2053,7 +2073,9 @@ def validate_new_rental(d,t):
              cost=bike.get('cost') or cost,bike_name=bike.get('name',''),bike_vin=bike.get('vin',''))
     if any(d.get(field) for field in ('refund','deposit_refund','payoff','swaps','defer','closed','signed_at','debt','dpays')):
         raise Bad('При выдаче можно учесть первую неделю и обеспечительный платёж.')
-    d['late_fee']=late_fee_record(LATE_FEE_AMOUNT,LATE_FEE_DAY)
+    amount=bike.get('default_fine_amount',cfgv('default_fine_amount',LATE_FEE_AMOUNT))
+    d['late_fee']=late_fee_record(amount,LATE_FEE_DAY)
+    if amount!=LATE_FEE_AMOUNT:d['fine_rates']=[{'from':start,'amount':amount}]
     validate_rental_record(d)
     tax=cfgv('tax',7);future_rates={'tax':tax if 0<=tax<=100 else 0,**fee_rates('СБП')}
     issue_rates={**future_rates,**fee_rates(first['method'])}
@@ -2148,9 +2170,11 @@ def early_buyout_action(b,ro,x,t,by):
         return quote
     if operation=='cancel':
         check_version(d,b)
-        if d.get('status')!='active' or not d.get('payoff') or d['payoff'].get('qr') or d.get('deposit_refund'):
-            raise Bad('Отмена доступна для ручной отметки до подписания документов.')
-        old=copy.deepcopy(d);d.pop('payoff')
+        if d.get('status')!='active' or not d.get('payoff') or d.get('deposit_refund'):
+            raise Bad('Отмена доступна до подписания документов и возврата обеспечения.')
+        if d['payoff'].get('qr') and (not d.get('lease') or ro!='owner'):raise Bad('Оплату по QR выкупа может снять с учёта владелец.')
+        old=copy.deepcopy(d);payment=d.pop('payoff')
+        discard_receipt(key,{payment.get('source'),payment.get('qr')},t,by)
         put_srv(key,'deal',d,'cancel-early-buyout',by,old)
         return {}
     date=t if ro=='client' else deal_payment_date(d,b.get('date',t),t)
@@ -2275,9 +2299,20 @@ def cancel_debt_payment(d):
     payments.pop();d['debt']=payment['pv']
     return payment.get('source') or payment.get('qr')
 
+def discard_receipt(key,sources,t,by):
+    sources={source for source in sources if source}
+    for source in sources:
+        qr=row(source)
+        if qr and qr[0]=='qr' and qr[1].get('deal')==key:
+            before=qr[1]
+            put_srv(source,'qr',{**before,'accounting_void':True},'qr-accounting-void',by,before)
+    clear_statement_surplus(key,sources,t,by)
+
 def clear_statement_surplus(key,sources,t,by):
     for i,z in docs_of('unk'):
-        if z.get('deal')==key and z.get('source') in sources and z.get('status')=='open' and not z.get('qr'):
+        if z.get('deal')==key and (z.get('source') or z.get('qr')) in sources and (
+            z.get('status')=='open' or z.get('status')=='done' and z.get('qr')
+        ):
             old=dict(z);z.update(status='void',resolvedAt=t)
             put_srv(i,'unk',z,'undo-statement-surplus',by,old)
 
@@ -2368,28 +2403,42 @@ def workflow_action(p,b,ro,x):
         return remove_catalog_entry(b)
     if p in ('/api/rental-act','/api/rental-renew','/api/deposit-return'):return rental_action(p,b,ro,x,t,by)
     if p=='/api/early-buyout':return early_buyout_action(b,ro,x,t,by)
+    if p=='/api/deal-fine':
+        key,d=action_deal(b,ro,x,permission='pen')
+        check_version(d,b)
+        if d.get('status')!='active' or d.get('payoff'):raise Bad('Договор закрыт.')
+        amount=late_fee_record(b.get('amount'),LATE_FEE_DAY)['amount']
+        old=copy.deepcopy(d);effective=add(t,1)
+        d['fine_rates']=[change for change in d.get('fine_rates') or [] if change['from']<effective]
+        if amount!=fine_amount(d,effective):
+            d['fine_rates'].append({'from':effective,'amount':amount})
+        put_srv(key,'deal',d,'deal-fine',by,old)
+        return {'from':effective}
     if p=='/api/calendar':
         key,d=action_deal(b,ro,x,permission='deals',allow_client=True)
         if d.get('status')!='active':raise Bad('Выкуп закрыт.')
         return download_file('platezhi.ics','text/calendar; charset=utf-8',calendar_data(key,d,t),key)
     if p=='/api/tariff-image':
         if not (ro=='owner' or (ro=='admin' and hasfin(x[1].get('perms',[])))):raise Bad('Нет доступа.')
-        model,weeks,batteries=b.get('model'),b.get('weeks'),b.get('batteries',1)
-        allowed_weeks=RENTAL_WEEKS if 'slots' in b else WEEKLY_TERMS
-        if (not known_bike_model(model) or model in cfgv('catalogArchivedModels',[])
-            or (weeks is not None and (type(weeks) is not int or weeks not in allowed_weeks))):
-            raise Bad('Проверьте комплектацию и срок выкупа.')
-        if 'slots' in b:
-            slots=rental_key(b['slots']).split(',')
-            available=rental_models(doc('cfg') or {}).get(model,{}).get('batteries',{})
-            if any(slot not in available for slot in slots):raise Bad('Выберите сохранённые варианты АКБ.')
-            key=f'{model}-{len(slots)}-akb'
+        if b.get('comparison') is True:
+            filename='podbor-komplektaciy.png'
         else:
-            if not valid_batteries(batteries):raise Bad('Проверьте комплектацию и срок выкупа.')
-            key=tariff_key(model,batteries)
+            model,weeks,batteries=b.get('model'),b.get('weeks'),b.get('batteries',1)
+            allowed_weeks=RENTAL_WEEKS if 'slots' in b else WEEKLY_TERMS
+            if (not known_bike_model(model) or model in cfgv('catalogArchivedModels',[])
+                or (weeks is not None and (type(weeks) is not int or weeks not in allowed_weeks))):
+                raise Bad('Проверьте комплектацию и срок выкупа.')
+            if 'slots' in b:
+                slots=rental_key(b['slots']).split(',')
+                available=rental_models(doc('cfg') or {}).get(model,{}).get('batteries',{})
+                if any(slot not in available for slot in slots):raise Bad('Выберите сохранённые варианты АКБ.')
+                key=f'{model}-{len(slots)}-akb'
+            else:
+                if not valid_batteries(batteries):raise Bad('Проверьте комплектацию и срок выкупа.')
+                key=tariff_key(model,batteries)
+            filename=f'grafik-{key}-{weeks}-ned.png' if weeks else f'tarify-{key}.png'
         image=decode_upload(b.get('png'),1200000)
         if not image.startswith(b'\x89PNG\r\n\x1a\n'):raise Bad('Выберите изображение PNG.')
-        filename=f'grafik-{key}-{weeks}-ned.png' if weeks else f'tarify-{key}.png'
         return download_file(filename,'image/png',image)
     if p=='/api/payment-report':return payment_report_action(b,ro,x,t,by)
     if p=='/api/statement':
@@ -2418,7 +2467,7 @@ def workflow_action(p,b,ro,x):
         key,d=action_deal(b,ro,x);check_version(d,b)
         if d.get('status')!='active' or d.get('payoff'):raise Bad('Выкуп закрыт.')
         old=copy.deepcopy(d);source=cancel_debt_payment(d)
-        if source:clear_statement_surplus(key,{source},t,by)
+        if source:discard_receipt(key,{source},t,by)
         put_srv(key,'deal',d,'cancel-debt-pay',by,old)
         return {}
     if p=='/api/bike-preparation':
@@ -2540,8 +2589,8 @@ def workflow_action(p,b,ro,x):
             put_srv(key,'deal',d,'move-payment',by,old)
             return preview
         count=cancel_payment(d,b.get('period'))
-        removed={p['source'] for k,p in old['paid'].items() if k not in d['paid'] and p.get('source')}
-        if removed:clear_statement_surplus(key,removed,t,by)
+        removed={p.get(field) for k,p in old['paid'].items() if k not in d['paid'] for field in ('source','qr')}
+        discard_receipt(key,removed,t,by)
         put_srv(key,'deal',d,'cancel-payment',by,old)
         return {'count':count}
     if p=='/api/reschedule-request':
@@ -2721,6 +2770,7 @@ class H(BaseHTTPRequestHandler):
                 if q.get('status')=='open':poll_soon()
                 details={k:q.get(k) for k in('amt','kind','pen','payload','img','status','date','expires')}
                 quote=q.get('quote') or {}
+                if q.get('accounting_void'):details['status']='void'
                 fine=quote.get('fine')
                 if fine:details['fine']=fine
                 if dd.get('lease') and q['kind']=='selection' and quote.get('mode')=='periods' and quote.get('count',0)>=2:
@@ -2798,7 +2848,7 @@ class H(BaseHTTPRequestHandler):
             if p in ('/api/payquote','/api/pay','/api/pay-debt','/api/cancel-debt-pay','/api/move-payment','/api/cancel-payment','/api/early-buyout',
                      '/api/reschedule-request','/api/reschedule','/api/reschedule-manual','/api/close-deal','/api/return-deal',
                      '/api/calendar','/api/tariff-image','/api/deal-note','/api/bike-preparation','/api/bike-writeoff','/api/payment-report','/api/statement',
-                     '/api/rental-act','/api/rental-renew','/api/deposit-return','/api/catalog-delete'):
+                     '/api/rental-act','/api/rental-renew','/api/deposit-return','/api/catalog-delete','/api/deal-fine'):
                 try:
                     result=workflow_action(p,b,ro,x);db.commit()
                     return s.send(200,json.dumps(result).encode())
@@ -2856,6 +2906,8 @@ class H(BaseHTTPRequestHandler):
                                 if any(field in new for field in RENTAL_CATALOG_FIELDS):validate_rental_catalog(new)
                                 for field in ('multi_discount','dd','dbd','late_fee_amount','late_fee_day'):
                                     new.pop(field,None)
+                                if 'default_fine_amount' in new:
+                                    new['default_fine_amount']=late_fee_record(new['default_fine_amount'],LATE_FEE_DAY)['amount']
                                 for field in ('receipt','acq','tax','pen'):
                                     if field in new and (not old or old.get(field)!=new[field]):
                                         value=float(new[field])
@@ -2866,6 +2918,9 @@ class H(BaseHTTPRequestHandler):
                                     if not 50<=value<=100:raise Bad('Минимальная частичная оплата — от 50 до 100%.')
                                     new['dmin']=value
                             except (Bad,ValueError,TypeError) as e:return s.send(400,json.dumps({'err':str(e)}).encode())
+                        if k=='bike' and 'default_fine_amount' in new:
+                            try:new['default_fine_amount']=late_fee_record(new['default_fine_amount'],LATE_FEE_DAY)['amount']
+                            except Bad as e:return s.send(400,json.dumps({'err':str(e)}).encode())
                         if k=='bike' and new.get('model') is not None:
                             model=new['model']
                             if not known_bike_model(model):
@@ -2897,6 +2952,8 @@ class H(BaseHTTPRequestHandler):
                                         if old.get('payoff') or replacement.get('model')!=old['lease']['model']:
                                             raise Bad('Для замены выберите велосипед той же модели до выкупа.')
                                         new.update(bike_name=replacement.get('name',''),bike_vin=replacement.get('vin',''))
+                                if new.get('fine_rates')!=(old or {}).get('fine_rates'):
+                                    raise Bad('Размер штрафа меняется отдельным действием в карточке.')
                                 if any(new.get(field)!= (old or {}).get(field) for field in ('payoff','payoff_terms')):
                                     raise Bad('Условия досрочного выкупа меняются отдельным действием.')
                                 if old and old.get('payoff_terms') and any(new.get(field)!=old.get(field) for field in ('start','total','down')):
@@ -3161,7 +3218,7 @@ def public_bot_message(section,index,settings,username,domain):
     rows=[]
     if section=='home':
         body=(f'Вольт Вояж\nАренда электровелосипедов с правом выкупа\n\n{PUBLIC_CITY}. '
-              'Выдача и возврат по записи. Срок аренды 20 или 26 недель, оплата еженедельно. '
+              'Выдача и возврат по записи. Срок для новых договоров — 26 недель, оплата еженедельно. '
               'Выкуп доступен с пятой недели после полной оплаты первых четырёх.\n\n'
               'Договор подписываем при выдаче. Тогда вы получите ссылку на кабинет с графиком и оплатой.')
         rows=[
@@ -3196,7 +3253,7 @@ def public_bot_message(section,index,settings,username,domain):
               'Можно скачать QR-код и загрузить картинку в онлайн-банке, если он поддерживает оплату из галереи. '
               'Если оплата в кабинете недоступна, позвоните нам.\n\n'
               f'Если взнос полностью неоплачен, первые {LATE_FEE_DAY-1} дня после срока проходят без начислений. '
-              f'На {LATE_FEE_DAY}-й день добавляется разовый штраф {rub(LATE_FEE_AMOUNT)}. '
+              f'На {LATE_FEE_DAY}-й день добавляется разовый штраф, если он предусмотрен договором. '
               f'С {UNPAID_PENALTY_DAY}-го дня начисляется ежедневная неустойка.\n\n'
               'Можно оплатить до четырёх ближайших периодов за раз или внести 50% за ближайший период. '
               f'Внесите вторую половину до конца {PARTIAL_GRACE_DAYS}-го календарного дня после даты по графику. '
