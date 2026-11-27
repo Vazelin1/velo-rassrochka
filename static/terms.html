@@ -30,6 +30,7 @@
     .tariffs { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr)); }
     article { padding: 14px 16px; border: 1px solid #dce5dd; border-radius: 12px; }
     ul { margin: 0; padding-left: 1.2em; }
+    .documents { margin-bottom: 1rem; }
     li + li { margin-top: .45em; }
     dl { display: grid; grid-template-columns: max-content 1fr; gap: .4em 1em; margin: 0 0 1em; }
     dt { color: #416055; }
@@ -81,6 +82,8 @@
         <dt>Город</dt><dd>$city</dd>
         <dt>Телефон</dt><dd><a href="tel:$phone_href">$phone</a></dd>
       </dl>
+      <h3>Документы</h3>
+      <ul class="documents">$documents</ul>
       <details class="policy" id="privacy-policy">
         <summary>$privacy_title</summary>
         <div>

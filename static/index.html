@@ -1980,7 +1980,7 @@ function set(){
         <button class="btn sec" onclick="$('#rf').click()">${ic('up','s')}Восстановить</button></div>
         <input id=rf type=file accept=".json,application/json" hidden onchange="restoreFile(this)"></div>`;
     const log=`<div class=grp><button class="row nl" onclick="go('logS')"><span class=gl>${ic('list')}</span><span class=tx><b>Открыть журнал действий</b><span>Кто и что менял</span></span>${ic('right')}</button></div>`;
-    return `<div class=hd><div><small>Версия 32</small><h1>Настройки</h1></div></div>`
+    return `<div class=hd><div><small>Версия 33</small><h1>Настройки</h1></div></div>`
         +tariffs
         +settingSection('payments','Платежи, штрафы и неустойка',payments)
         +settingSection('fees','Налог и комиссии',fees)
@@ -2990,6 +2990,7 @@ function clientRequisites(){
     return `<footer class="client-requisites" aria-label="Реквизиты ИП">
         ${operator?`<strong>ИП ${esc(operator.name)}</strong><div>ИНН ${esc(operator.inn)} · ОГРНИП ${esc(operator.ogrnip)}</div>`:''}
         ${ME.city?`<div>${esc(ME.city)}</div>`:''}
+        <div><a href="/terms" target="_blank" rel="noopener noreferrer">Условия аренды и документы</a></div>
     </footer>`;
 }
 function clientUI(){
