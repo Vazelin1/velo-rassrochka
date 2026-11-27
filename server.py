@@ -179,7 +179,7 @@ def payment_public(deal):
         'early': [public(p) for p in deal.get('early') or []],
         'dpays': [public(p) for p in deal.get('dpays') or []],
         'payoff': public(deal['payoff']) if deal.get('payoff') else None,
-    } | ({k:deal[k] for k in ('lease','deposit','deposit_refund','refund','refund_date','late_fee') if k in deal} if deal.get('lease') else {})
+    } | ({k:deal[k] for k in ('lease','deposit','deposit_refund','refund','refund_date','rent_refund_due','late_fee') if k in deal} if deal.get('lease') else {})
 
 def mine(cid):
     c=doc(cid) or {};out=[];date=tod()
@@ -338,6 +338,8 @@ def validate_backup(records,bindings):
             if 'gift' in data:data['gift']=validate_gift(data['gift'])
             validate_fine_rates(data)
             if 'lease' in data:validate_rental_record(data)
+            elif 'rent_refund_due' in data:raise Bad('Ожидаемый возврат допустим только по аренде.')
+            validate_receipt_corrections(data)
             if 'payoff_terms' in data:validate_payoff_terms(data)
             if 'payoff' in data:validate_payoff_record(data)
             if 'handover' in data and (data['status']!='archived' or not handover_confirmed(data['handover'])):
@@ -458,6 +460,40 @@ def receipt_part(d,kind,key):
 
 def receipt_cash(p,kind):
     return (p.get('date'),p.get('method'),p.get('paid',p.get('amt')) if kind=='early' else p.get('amt',0)+(p.get('pen') or 0))
+
+def report_receipt_parts(d):
+    if d.get('down'):
+        method=d.get('down_method') or (d.get('paid') or {}).get('1',{}).get('method') or 'наличные'
+        yield 'down',(d['start'],method,d.get('down_source') or None)
+    for kind,key,p in receipt_parts(d):
+        identifier=kind if key is None else f'{kind}:{key}'
+        source=p.get('source')
+        if kind!='early':source=source or p.get('qr')
+        if kind=='paid':source=source or p.get('group')
+        method=(p.get('method') or 'наличные') if kind=='paid' else p.get('method')
+        yield identifier,(p.get('date'),method,source or None)
+
+def report_receipt_group(d,identifier):
+    parts=dict(report_receipt_parts(d))
+    identity=parts.get(identifier)
+    if identity is None:raise Bad('Платёж не найден.')
+    if identity[2] is None:return [identifier]
+    return sorted(key for key,value in parts.items() if value==identity)
+
+def validate_receipt_corrections(d):
+    if 'report_receipt_corrections' not in d:return
+    corrections=d['report_receipt_corrections']
+    if d.get('status')=='active' or not isinstance(corrections,list):
+        raise Bad('Корректировки поступлений доступны для закрытых договоров.')
+    used=set()
+    for correction in corrections:
+        if not isinstance(correction,dict):raise Bad('Проверьте корректировки поступлений.')
+        parts=correction.get('parts');reason=correction.get('reason')
+        if (not isinstance(parts,list) or not parts or not all(isinstance(part,str) for part in parts)
+            or parts!=report_receipt_group(d,parts[0]) or used.intersection(parts)
+            or not isinstance(reason,str) or not reason.strip() or len(reason)>300):
+            raise Bad('Проверьте корректировки поступлений.')
+        valid_date(correction.get('date'));used.update(parts)
 
 def fee_rates(method,estimated=False):
     def rate(name):
@@ -1628,6 +1664,10 @@ def qr_request(u,cl,b):
     with QR_LOCKS[hash(str(b.get('deal') or ''))%len(QR_LOCKS)]:
         return register_qr(u,cl,b)
 
+def payment_qr_access(ro,subject,deal):
+    return ro=='owner' or (ro=='admin' and 'pay' in subject[1].get('perms',[])) or (
+        ro=='client' and deal.get('client')==subject)
+
 def register_qr(u,cl,b):
     """A QR for a deal, asked by the client (cl) or by the owner / an administrator with the right «pay». The bank is called without the lock."""
     with L:
@@ -1664,7 +1704,7 @@ def bank_payment_date(payment,q):
         if not isinstance(value,str):continue
         try:
             when=dt.datetime.fromisoformat(value.replace('Z','+00:00'))
-            date=when.astimezone(MSK).date().isoformat() if when.tzinfo else valid_date(value)
+            date=(when.astimezone(MSK) if when.tzinfo else when).date().isoformat()
             if q['date']<=date<=tod():return date,value
         except (ValueError,Bad):pass
     return (q['date'],None) if q['date']==tod() else (None,None)
@@ -2051,10 +2091,13 @@ def validate_rental_record(d):
         amount=whole(release.get('amt'),'сумму возврата');held=whole(release.get('held'),'сумму удержания')
         if min(amount,held)<0 or amount+held!=plan['deposit'] or (held and not release.get('reason')):
             raise Bad('Возврат и удержание должны совпадать с суммой обеспечения.')
-    if d.get('refund'):
+    if d.get('refund') or 'rent_refund_due' in d:
         returned=valid_date(d.get('closed'))
-        if (d['status']!='seized' or returned<d['start'] or valid_date(d.get('refund_date'))<returned
-            or d['refund']!=rental_return_refund(d,returned)):
+        amount=rental_return_refund(d,returned)
+        pending=d.get('rent_refund_due')
+        if (d['status']!='seized' or returned<d['start'] or not amount
+            or ('rent_refund_due' in d and (pending!=amount or d.get('refund') or d.get('refund_date')))
+            or ('rent_refund_due' not in d and (d['refund']!=amount or valid_date(d.get('refund_date'))<returned))):
             raise Bad('Проверьте возврат арендной платы в копии.')
 
 def validate_new_rental(d,t):
@@ -2326,6 +2369,33 @@ def rental_return_refund(d,date):
             cents+=max(0,received-(full-(full*unused+3)//7))
     return money(cents)
 
+def correct_report_receipt(b,ro,x,t,by):
+    if ro!='owner':raise Bad('Корректировка поступлений доступна владельцу.')
+    key,d=action_deal(b,ro,x)
+    if d.get('status')=='active':raise Bad('В действующем договоре отмените оплату в графике.')
+    check_version(d,b)
+    identifier=b.get('receipt')
+    if not isinstance(identifier,str):raise Bad('Платёж не найден.')
+    parts=report_receipt_group(d,identifier)
+    corrections=list(d.get('report_receipt_corrections') or [])
+    previous=next((item for item in corrections if item['parts']==parts),None)
+    if b.get('do')=='exclude':
+        if previous:raise Bad('Поступление уже исключено из отчётов.')
+        reason=b.get('reason')
+        if not isinstance(reason,str) or not reason.strip() or len(reason.strip())>300:
+            raise Bad('Укажите причину корректировки, до 300 символов.')
+        corrections.append({'parts':parts,'reason':reason.strip(),'date':t})
+        action='receipt-report-exclude'
+    elif b.get('do')=='restore' and previous:
+        corrections.remove(previous)
+        action='receipt-report-restore'
+    else:raise Bad('Корректировка поступления не найдена.')
+    old=dict(d)
+    if corrections:d['report_receipt_corrections']=corrections
+    else:d.pop('report_receipt_corrections',None)
+    put_srv(key,'deal',d,action,by,old)
+    return {}
+
 def rental_action(p,b,ro,x,t,by):
     key,d=action_deal(b,ro,x,permission='deals')
     if not d.get('lease'):raise Bad('Действие доступно для аренды с правом выкупа.')
@@ -2340,6 +2410,14 @@ def rental_action(p,b,ro,x,t,by):
         d['n']+=weeks
         put_srv(key,'deal',d,'rental-renew',by,old)
         return {'until':add(d['start'],d['n']*7-1)}
+    if p=='/api/rent-refund-paid':
+        if d.get('status')!='seized' or not d.get('rent_refund_due'):
+            raise Bad('По договору нет ожидаемого возврата арендной платы.')
+        date=received_date(b.get('date'),t)
+        if date<d['closed']:raise Bad('Дата выплаты раньше возврата велосипеда.')
+        d.update(refund=d.pop('rent_refund_due'),refund_date=date)
+        put_srv(key,'deal',d,'rent-refund-paid',by,old)
+        return {'refund':d['refund'],'date':date}
     if p=='/api/deposit-return':
         deposit=d.get('deposit')
         if not deposit or d.get('deposit_refund') or (d['status']=='active' and not d.get('payoff')):
@@ -2401,7 +2479,8 @@ def workflow_action(p,b,ro,x):
     if p=='/api/catalog-delete':
         if ro!='owner':raise Bad('Удаление из каталога доступно владельцу.')
         return remove_catalog_entry(b)
-    if p in ('/api/rental-act','/api/rental-renew','/api/deposit-return'):return rental_action(p,b,ro,x,t,by)
+    if p in ('/api/rental-act','/api/rental-renew','/api/deposit-return','/api/rent-refund-paid'):return rental_action(p,b,ro,x,t,by)
+    if p=='/api/report-receipt':return correct_report_receipt(b,ro,x,t,by)
     if p=='/api/early-buyout':return early_buyout_action(b,ro,x,t,by)
     if p=='/api/deal-fine':
         key,d=action_deal(b,ro,x,permission='pen')
@@ -2524,13 +2603,16 @@ def workflow_action(p,b,ro,x):
             if any(p['date']>date for _,_,p in receipt_parts(d)):raise Bad('Дата возврата раньше учтённой оплаты аренды.')
             amount=rental_return_refund(d,date)
             if b.get('preview'):return {'refund':amount,'version':d.get('_v',0)}
-            if b.get('refund')!=amount or (amount and b.get('paidRefund') is not True):
-                raise Bad('Сверьте сумму и подтвердите, что деньги за оставшиеся дни возвращены.')
+            if b.get('refund')!=amount or (amount and type(b.get('paidRefund')) is not bool):
+                raise Bad('Сверьте сумму и укажите, выполнен ли возврат денег.')
         else:amount=whole(b.get('refund',0),'сумму возврата')
         check_version(d,b)
         if amount<0:raise Bad('Укажите сумму возврата или 0.')
-        old=copy.deepcopy(d);d.update(status='seized',closed=date,refund=amount)
-        if d.get('lease') and amount:d['refund_date']=t
+        old=copy.deepcopy(d);d.update(status='seized',closed=date)
+        if d.get('lease') and amount:
+            if b['paidRefund']:d.update(refund=amount,refund_date=t)
+            else:d['rent_refund_due']=amount
+        else:d['refund']=amount
         put_srv(key,'deal',d,'return-deal',by,old)
         update_preparation(d['bike'],'inspection',date,by,returned=True)
         close_pending_schedule(key,t,by)
@@ -2768,7 +2850,7 @@ class H(BaseHTTPRequestHandler):
                 ro,x=role(u);rw=ID.fullmatch(s.path[8:]) and row(s.path[8:]);q=rw and rw[0]=='qr' and rw[1]
                 if not q or q.get('access_revoked'):return s.send(404,b'{}')
                 dd=doc(q['deal']) or {}
-                if not(ro in('owner','admin') or (ro=='client' and dd.get('client')==x)):return s.send(403,b'{}')
+                if not payment_qr_access(ro,x,dd):return s.send(403,b'{}')
                 if q.get('status')=='open':poll_soon()
                 details={k:q.get(k) for k in('amt','kind','pen','payload','img','status','date','expires')}
                 quote=q.get('quote') or {}
@@ -2841,7 +2923,7 @@ class H(BaseHTTPRequestHandler):
                     record=ID.fullmatch(qr) and row(qr)
                     if not record or record[0]!='qr' or record[1].get('access_revoked'):return s.send(404,b'{}')
                     deal_id=record[1]['deal'];deal=doc(deal_id)
-                    if not deal or (ro_=='client' and deal.get('client')!=subject):return s.send(403,b'{}')
+                    if not deal or not payment_qr_access(ro_,subject,deal):return s.send(403,b'{}')
                 if len(IMG)>200:IMG.clear()
                 k=secrets.token_urlsafe(16);IMG[k]=(t+600,png,deal_id,subject if ro_=='client' else None)
             return s.send(200,json.dumps({'url':'/img/'+k}).encode())
@@ -2850,7 +2932,8 @@ class H(BaseHTTPRequestHandler):
             if p in ('/api/payquote','/api/pay','/api/pay-debt','/api/cancel-debt-pay','/api/move-payment','/api/cancel-payment','/api/early-buyout',
                      '/api/reschedule-request','/api/reschedule','/api/reschedule-manual','/api/close-deal','/api/return-deal',
                      '/api/calendar','/api/tariff-image','/api/deal-note','/api/bike-preparation','/api/bike-writeoff','/api/payment-report','/api/statement',
-                     '/api/rental-act','/api/rental-renew','/api/deposit-return','/api/catalog-delete','/api/deal-fine'):
+                     '/api/rental-act','/api/rental-renew','/api/deposit-return','/api/rent-refund-paid',
+                     '/api/report-receipt','/api/catalog-delete','/api/deal-fine'):
                 try:
                     result=workflow_action(p,b,ro,x);db.commit()
                     return s.send(200,json.dumps(result).encode())
@@ -2933,6 +3016,11 @@ class H(BaseHTTPRequestHandler):
                             return s.send(400,json.dumps({'err':'Выберите один или два аккумулятора.'}).encode())
                         if k=='deal':
                             try:
+                                if any(new.get(field)!=(old or {}).get(field) for field in ('rent_refund_due','report_receipt_corrections')):
+                                    raise Bad('Возврат и корректировки проводятся отдельными действиями.')
+                                if (old or {}).get('report_receipt_corrections') and any(new.get(field)!=old.get(field) for field in (
+                                    'status','paid','dpays','early','payoff','down','down_method','down_source','start')):
+                                    raise Bad('История оплат зафиксирована после корректировки поступлений.')
                                 if (new.get('defer') or [])!=((old or {}).get('defer') or []):
                                     raise Bad('Сроки ранее согласованных платежей зафиксированы.')
                                 if old and new.get('lease')!=old.get('lease'):
@@ -2982,7 +3070,7 @@ class H(BaseHTTPRequestHandler):
                                         if any(j!=i and d.get('client')==client_id and d.get('status')=='active' for j,d in docs_of('deal')):
                                             raise Bad('У клиента уже есть действующий выкуп.')
                             except (Bad,ValueError,TypeError) as e:return s.send(400,json.dumps({'err':str(e)}).encode())
-                            stamp_receipts(new,old)
+                            if not new.get('report_receipt_corrections'):stamp_receipts(new,old)
                             if old and old.get('status')=='active':
                                 if new.get('status')=='seized':
                                     update_preparation(old['bike'],'inspection',tod(),who_.lstrip('@'),returned=True)
