@@ -2725,12 +2725,14 @@ class H(BaseHTTPRequestHandler):
         if u is None:FAIL[ip].append(t)
         return u
     def do_HEAD(s):
-        if s.path.split('?',1)[0] in ('/privacy','/terms') or s.path.startswith(('/img/','/files/','/dl/')):return s.do_GET()
+        if s.path.split('?',1)[0] in ('/privacy','/terms',*PUBLIC_DOCUMENTS) or s.path.startswith(('/img/','/files/','/dl/')):return s.do_GET()
         return s.send(404,b'')
     def do_GET(s):
         s.path,_,query=s.path.split('#',1)[0].partition('?')
         if s.path=='/privacy':
             return s.send(200,privacy_page().encode('utf-8'),'text/html; charset=utf-8',{'Cache-Control':'no-cache'})
+        if s.path in PUBLIC_DOCUMENTS:
+            return s.send(200,public_document_page(s.path).encode('utf-8'),'text/html; charset=utf-8',{'Cache-Control':'no-cache'})
         if s.path=='/terms':
             with L:settings=doc('cfg') or {}
             return s.send(200,bank_terms_page(settings).encode('utf-8'),'text/html; charset=utf-8',{'Cache-Control':'no-cache'})
@@ -3136,6 +3138,11 @@ PUBLIC_OGRNIP='323784700210652'
 PUBLIC_PHONE='+7 921 752-10-54'
 PUBLIC_CITY='Санкт-Петербург'
 PRIVACY_TITLE='Политика обработки персональных данных'
+PUBLIC_PICKUP_ADDRESS='Санкт-Петербург, ул. Коллонтай, д. 52, корп. 2'
+PUBLIC_DOCUMENTS={
+    '/rental-agreement':('Образец договора аренды с правом выкупа','rental-agreement.txt'),
+    '/data-consent':('Образец согласия на обработку персональных данных','data-consent.txt'),
+}
 
 def privacy_paragraphs():
     source=Path(__file__).with_name('static')/'privacy.txt'
@@ -3144,18 +3151,32 @@ def privacy_paragraphs():
     )
     return text.strip().split('\n\n')
 
-def privacy_body(heading):
+def public_document_body(paragraphs,heading):
     return ''.join(
         f'<{heading}>{escape(p[3:])}</{heading}>' if p.startswith('## ') else f'<p>{escape(p)}</p>'
-        for p in privacy_paragraphs()
+        for p in paragraphs
     )
 
+def privacy_body(heading):
+    return public_document_body(privacy_paragraphs(),heading)
+
 def privacy_page():
+    return public_page(PRIVACY_TITLE,privacy_body('h2'))
+
+def public_document_page(path):
+    title,filename=PUBLIC_DOCUMENTS[path]
+    source=Path(__file__).with_name('static')/filename
+    paragraphs=source.read_text(encoding='utf-8').strip().split('\n\n')
+    operator=f'ИП {PUBLIC_OPERATOR}, ИНН {PUBLIC_INN}, ОГРНИП {PUBLIC_OGRNIP}. Телефон {PUBLIC_PHONE}.'
+    return public_page(title,f'<p>{escape(operator)}</p>'+public_document_body(paragraphs,'h2')+
+        '<nav><a href="/terms">Условия аренды</a> · <a href="/privacy">Политика обработки данных</a></nav>')
+
+def public_page(title,body):
     return f'''<!doctype html>
 <html lang="ru">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{PRIVACY_TITLE} · Вольт Вояж</title>
+<title>{escape(title)} · Вольт Вояж</title>
 <style>
     :root {{color-scheme:light; background:#f1f2ee; color:#1f2b28; font:16px/1.6 system-ui,sans-serif}}
     body {{margin:0; padding:clamp(12px,4vw,44px)}}
@@ -3166,7 +3187,7 @@ def privacy_page():
     h2 {{font-size:1.1rem; line-height:1.35; margin:1.45em 0 .45em}}
     p {{margin:.55em 0}}
 </style>
-<main><header><p>Вольт Вояж</p><h1>{PRIVACY_TITLE}</h1></header>{privacy_body('h2')}</main>
+<main><header><p>Вольт Вояж</p><h1>{escape(title)}</h1></header>{body}</main>
 </html>'''
 
 PUBLIC_MENU='vv:'
@@ -3178,7 +3199,9 @@ def public_button(label,page):
 def public_tariffs(settings):
     models=rental_models(settings)
     brands=settings.get('rentalBrands') or {}
-    for entry in sorted(models.values(),key=lambda model:(brands.get(model['brand'],'').casefold(),model['name'].casefold())):
+    archived=set(settings.get('catalogArchivedModels') or [])
+    visible=(entry for identifier,entry in models.items() if identifier not in archived)
+    for entry in sorted(visible,key=lambda model:(brands.get(model['brand'],'').casefold(),model['name'].casefold())):
         brand=brands.get(entry['brand'],'')
         model=entry['name']
         title=f'{brand} {model}' if brand and brand.casefold() not in model.casefold() else model
@@ -3247,7 +3270,7 @@ def public_bot_message(section,index,settings,username,domain):
         if section=='privacy':rows.append([public_button('К реквизитам','details')])
     elif section=='payment':
         body=('Как платить\n\n'
-              'При выдаче оплачиваются первая неделя и обеспечительный платёж, если он указан в тарифе. '
+              'Первую неделю и обеспечительный платёж, если он предусмотрен тарифом, оплачиваете при выдаче после подписания договора. '
               'Далее график, суммы и фактические оплаты видны в личном кабинете. '
               'Для оплаты по СБП откройте платёж в кабинете и выберите свой банк. '
               'Можно скачать QR-код и загрузить картинку в онлайн-банке, если он поддерживает оплату из галереи. '
@@ -3264,12 +3287,17 @@ def public_bot_message(section,index,settings,username,domain):
               'Выкуп доступен с пятой недели после полной оплаты первых четырёх. '
               'Арендные платежи засчитываются в пределах цены выкупа. Сумма доплаты рассчитана в кабинете.')
     elif section=='return':
-        body=(f'Выдача и возврат\n\n{PUBLIC_CITY}. Выдача и возврат по предварительной записи. '
-              f'Позвоните {PUBLIC_PHONE}, чтобы согласовать дату, время и адрес.\n\n'
-              'При возврате сверяем даты и платежи. Если аренда внесена вперёд, рассчитываем возврат оплаты '
-              'за неиспользованные дни. Обеспечительный платёж возвращаем с учётом условий договора, '
-              'отдельно от расчёта по аренде. Сумму, способ и срок возврата сообщаем после сверки. '
-              'По вопросам об оплате или возврате можно позвонить по тому же номеру.')
+        body=('Выдача и возврат\n\n'
+              f'Бесплатный самовывоз по предварительной записи. Адрес выдачи: {PUBLIC_PICKUP_ADDRESS}. Доставки нет. '
+              f'Телефон для записи и отмены до выдачи: {PUBLIC_PHONE}. При выдаче проверяем исправность велосипеда и объясняем правила эксплуатации.\n\n'
+              'До выкупа можно отказаться от договора и вернуть велосипед без штрафа за сам отказ. '
+              'Позвоните, чтобы согласовать время возврата. Дату и состояние велосипеда фиксируем в акте.\n\n'
+              'Оплата за фактическую аренду по день возврата включительно сохраняется. '
+              'Возвращаем предоплату за неиспользованные оплаченные дни начиная со дня после возврата. '
+              'Например, если оплачено семь дней и велосипед возвращён на третий, к возврату 4/7 недельной платы. '
+              'Обеспечительный платёж рассчитываем отдельно по договору. Срок возврата денег — пять рабочих дней '
+              'с фактического возврата или выкупа, если законом не установлен меньший срок. '
+              'Для сверки оплаты по СБП сообщите номер договора, дату и сумму платежа.')
         rows.append([public_button('Связаться','contact')])
     elif section=='details':
         body=(f'Реквизиты и документы\n\nИП {PUBLIC_OPERATOR}\n'
@@ -3277,6 +3305,9 @@ def public_bot_message(section,index,settings,username,domain):
         rows.append([public_button('Политика обработки данных','privacy')])
         if re.fullmatch(r'[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+',domain or ''):
             rows.append([{'text':'Читать политику в браузере','url':f'https://{domain}/privacy'}])
+            for path,(title,_) in PUBLIC_DOCUMENTS.items():
+                rows.append([{'text':title,'url':f'https://{domain}{path}'}])
+            rows.append([{'text':'Условия аренды и оплаты','url':f'https://{domain}/terms'}])
     else:
         body=f'Связаться с Вольт Вояж\n\n{PUBLIC_PHONE}\n{PUBLIC_CITY}. Выдача и возврат по записи.'
     if section!='home':rows.append([public_button('В меню','home')])
@@ -3299,7 +3330,8 @@ def bank_terms_page(settings):
         payment=sections['payment'],returns=sections['return'],city=escape(PUBLIC_CITY),
         operator=escape(PUBLIC_OPERATOR),inn=escape(PUBLIC_INN),ogrnip=escape(PUBLIC_OGRNIP),
         phone=escape(PUBLIC_PHONE),phone_href=safe_phone(PUBLIC_PHONE),
-        privacy_title=escape(PRIVACY_TITLE),privacy_body=privacy_body('h3')
+        privacy_title=escape(PRIVACY_TITLE),privacy_body=privacy_body('h3'),
+        documents=''.join(f'<li><a href="{path}">{escape(title)}</a></li>' for path,(title,_) in PUBLIC_DOCUMENTS.items())
     )
 
 def public_bot_update(update):
