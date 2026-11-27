@@ -47,6 +47,9 @@ h3{margin:22px 4px 4px;font-size:17px;font-weight:700}
 .row+.row::before{content:"";position:absolute;top:0;left:74px;right:16px;height:1px;background:var(--ln)}
 .row.nl+.row::before,.row.nl::before{left:16px}
 .row .tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}.row .tx b{font-size:17px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.row .tx span{font-size:14px;color:var(--mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.report-receipt{flex-wrap:wrap;gap:8px 14px;cursor:default}
+.row.report-receipt .tx{flex-basis:min(100%,12rem)}
+.row.report-receipt .tx span{white-space:normal;overflow-wrap:anywhere}
 .row .rt{display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex:none}.row .rt b{font-size:16px;font-weight:700}
 .row .gl{width:44px;height:44px;border-radius:14px;background:var(--tb,var(--tint));color:var(--tt,var(--pine));display:grid;place-items:center;flex:none}
 .row.dn .tx b{color:var(--er)}.row.wr .tx span{white-space:normal}.row.wr{align-items:flex-start}
@@ -934,9 +937,31 @@ function staffRentalTerms(d){
         ${rentalPriceRows(d.lease.price,balance.price,balance.buyoutReduction)}${kv('Оплачено за аренду',m(balance.paid))}
         ${active?kv('Остаток к выкупу',m(balance.remaining))+kv('Выкуп с',fmt(start)+' · после 4 оплаченных недель'):''}
         ${active?kv('Разовый штраф',m(C.fineAmount(d)))+(next?kv('Штраф с '+fmt(next.from),m(next.amount)):''):''}
-        ${depositDetails(d)}${d.refund?kv('Возвращено за дни аренды',m(d.refund)):''}
+        ${depositDetails(d)}${rentRefundDetails(d)}
+        ${d.rent_refund_due&&can('deals')?`<button class="btn sec blk" onclick="markRentRefundPaid('${d.id}')">Отметить выплату за аренду</button>`:''}
         ${d.status==='archived'&&d.payoff&&can('deals')?`<button class="btn sec blk" onclick="downloadRentalAct('${d.id}')">${ic('down','s')}Скачать акт выкупа</button>`:''}
         </div>`;
+}
+function rentRefundDetails(d){
+    if(d.rent_refund_due)return kv('К возврату за дни аренды',m(d.rent_refund_due));
+    return d.refund?kv('Возвращено за дни аренды',m(d.refund)):'';
+}
+async function markRentRefundPaid(id){
+    const d=dealById(id);
+    if(!d?.rent_refund_due)return;
+    const date=await sheet(`<h3>Отметить выплату за аренду</h3>
+        <p>Подтвердите фактическую выплату ${m(d.rent_refund_due)}.</p>
+        <label class=fld><span>Дата выплаты</span><input type=date data-date min="${d.closed}" max="${C.today()}" value="${C.today()}"></label>
+        <button class="btn blk" data-confirm>Деньги выплачены</button><button class="btn sec blk" data-close>Отмена</button>`,(root,done)=>{
+        const input=root.querySelector('[data-date]');
+        root.querySelector('[data-confirm]').onclick=()=>{if(input.value&&input.checkValidity())done(input.value)};
+        root.querySelector('[data-close]').onclick=()=>done();
+    });
+    if(!date)return;
+    try{
+        await api('/api/rent-refund-paid',{deal:id,date,version:d._v||0});
+        await load();toast('Выплата учтена');
+    }catch(error){uiAlert(error.message||error)}
 }
 async function downloadRentalAct(id){
     try{downloadNamed(await api('/api/rental-act',{deal:id}))}catch(error){uiAlert(error.message||error)}
@@ -1055,11 +1080,11 @@ async function fin(id,st){
                 });
                 if(!date)return;
                 const preview=await api('/api/return-deal',{deal:id,date,preview:true});
-                const message=preview.refund?`За оставшиеся дни аренды верните клиенту ${m(preview.refund)}. Подтвердите после перечисления.`:
+                const message=preview.refund?`Аренда закроется, велосипед перейдёт на осмотр. К возврату за оставшиеся дни — ${m(preview.refund)}. После выплаты отметьте её в договоре.`:
                     'Аренда будет закрыта, велосипед перейдёт на осмотр.';
-                if(!await uiConfirm(message,preview.refund?'Деньги возвращены':'Оформить возврат',{title:'Возврат велосипеда'}))return;
-                await api('/api/return-deal',{deal:id,date,refund:preview.refund,version:preview.version,paidRefund:true});
-                await load();toast('Велосипед на осмотре');return;
+                if(!await uiConfirm(message,'Оформить возврат',{title:'Возврат велосипеда'}))return;
+                await api('/api/return-deal',{deal:id,date,refund:preview.refund,version:preview.version,paidRefund:false});
+                await load();toast(preview.refund?'Возврат оформлен, выплата ожидается':'Велосипед на осмотре');return;
             }
             if(!await uiConfirm('Выкуп будет закрыт, велосипед получит статус «На осмотре».','Вернуть в парк',{danger:true,title:'Оформить возврат велосипеда?'}))return;
             const refund=await uiPrompt('Возвращено клиенту, ₽ (0, если ничего)','0');if(refund===null)return;
@@ -1211,11 +1236,15 @@ function rentalSchedule(offer){
         return {week:i+1,paid,remaining:Math.max(0,offer.price-paid)};
     });
 }
+function scheduleBuyoutNote(schedule){
+    const last=schedule.at(-1);
+    return `Доплата за выкуп после ${last.week} недель: ${m(last.remaining)} без учёта уменьшения цены за оплату нескольких недель.`;
+}
 function sampleScheduleText(offer,date){
     const schedule=rentalSchedule(offer),title='Аренда с правом выкупа · '+rentalConfiguration(offer);
     const rows=schedule.map(row=>`${row.week}. ${fmt(C.add(date,7*(row.week-1)))} · ${m(offer.weekly)} за неделю${row.week>=4?' · остаток после недели '+m(row.remaining):''}`);
     return [title,`Цена выкупа — ${m(offer.price)}`,`При выдаче — ${m(offer.weekly+offer.deposit)}. В том числе обеспечение — ${m(offer.deposit)}.`,
-        `Выкуп доступен с ${fmt(C.add(date,28))} при полной оплате первых 4 недель.`,'',...rows,'','Памятка',...rentalMemo()].join('\n');
+        `Выкуп доступен с ${fmt(C.add(date,28))} при полной оплате первых 4 недель.`,'',...rows,'',scheduleBuyoutNote(schedule),'','Памятка',...rentalMemo()].join('\n');
 }
 function shareOffer(weeks){
     return shareRentalOffer(selectedRentalOffers().find(item=>item.weeks===weeks));
@@ -1234,10 +1263,11 @@ function tariffImageData(offers,date){
     const offer=offers[0],title='Аренда с правом выкупа',subtitle=leaseModelTitle(offer),memo=rentalMemo();
     const batteries=offer.batteries.map((battery,index)=>`АКБ ${index+1}  ·  ${batteryLabel(battery)}`);
     if(date){
+        const schedule=rentalSchedule(offer);
         return {title,subtitle,batteries,details:[`Цена выкупа — ${m(offer.price)}. Аренда — ${m(offer.weekly)} в неделю.`,
             `При выдаче ${fmt(date)} — ${m(offer.weekly+offer.deposit)}, возвратный платёж ${m(offer.deposit)}.`,
-            `Выкуп с ${fmt(C.add(date,28))} при полной оплате первых 4 недель.`],memo,
-            labels:['Оплачено','Плата за аренду','Остаток к выкупу'],rows:rentalSchedule(offer).map(row=>
+            `Выкуп с ${fmt(C.add(date,28))} при полной оплате первых 4 недель.`],memo:[scheduleBuyoutNote(schedule),...memo],
+            labels:['Оплачено','Плата за аренду','Остаток к выкупу'],rows:schedule.map(row=>
                 ({cells:[`${row.week} нед.`,m(row.paid),row.week>=4?m(row.remaining):'—']}))};
     }
     return {title,subtitle,batteries,details:[],memo,labels:['Срок','В неделю','Возвратный платёж','Цена выкупа'],
@@ -1413,21 +1443,42 @@ const curP=()=>repP||'M'+C.today().slice(0,7);
 function rng(p){if(p=='all')return['0000-01-01','9999-12-31'];if(p[0]=='Y'){const y=p.slice(1);return[`${y}-01-01`,`${y}-12-31`]}
 const y=+p.slice(1,5),mo=+p.slice(6,8);return[`${y}-${z2(mo)}-01`,`${y}-${z2(mo)}-${ldm(y,mo)}`]}
 const pLab=p=>p=='all'?'Всё время':p[0]=='Y'?`${p.slice(1)} год`:`${MF[+p.slice(6,8)-1]} ${p.slice(1,5)}`;
-function events(deals=S.deals){const r=[];deals.forEach(d=>{const p1=(d.paid||{})[1]||{};
-if(d.down)r.push({date:d.start,amt:d.down,pen:0,method:d.down_method||p1.method||'наличные',fees:d.down_fees,source:d.down_source,t:'down',d});
-Object.entries(d.paid||{}).forEach(([period,p])=>r.push({target:{kind:'period',period},date:p.date,amt:p.amt,pen:p.pen||0,fine:p.fine||0,method:p.method||'наличные',fees:p.fees,source:p.source||p.qr||p.group,t:d.lease?'rent':'pay',d}));
-(d.dpays||[]).forEach((z,index)=>r.push({target:index===d.dpays.length-1?{kind:'debt'}:null,date:z.date,amt:z.amt,pen:z.pen||0,fine:z.fine||0,method:z.method||'наличные',fees:z.fees,source:z.source||z.qr,t:d.lease?'rent':'pay',d}));
-(d.early||[]).forEach(e=>r.push({date:e.date,amt:e.paid??e.amt,pen:0,method:e.method||'наличные',fees:e.fees,source:e.source,t:'early',d}));
-const p=d.payoff;
-if(p&&(p.amt||p.pen))r.push({target:{kind:'payoff'},date:p.date,amt:p.amt,pen:p.pen,fine:p.fine||0,method:p.method,fees:p.fees,source:p.source||p.qr,t:d.lease?'buyout':'early',d});
-if(d.refund)r.push({date:d.refund_date||d.closed||d.start,amt:-d.refund,pen:0,method:'',t:'ref',d})});return r}
+function events(deals=S.deals,{includeExcluded=false}={}){
+    const rows=[];
+    for(const d of deals){
+        const corrections=new Map((d.report_receipt_corrections||[]).flatMap(item=>item.parts.map(part=>[part,item])));
+        const receive=(receipt,row)=>{
+            const correction=corrections.get(receipt);
+            if(!correction||includeExcluded)rows.push({...row,d,receipt,correction});
+        };
+        if(d.down)receive('down',{date:d.start,amt:d.down,pen:0,
+            method:d.down_method||d.paid?.[1]?.method||'наличные',fees:d.down_fees,source:d.down_source,t:'down'});
+        const type=d.lease?'rent':'pay';
+        for(const [period,p] of Object.entries(d.paid||{})){
+            receive('paid:'+period,{target:{kind:'period',period},date:p.date,amt:p.amt,pen:p.pen||0,fine:p.fine||0,
+                method:p.method||'наличные',fees:p.fees,source:p.source||p.qr||p.group,t:type});
+        }
+        for(const [index,p] of (d.dpays||[]).entries()){
+            receive('dpays:'+index,{target:index===d.dpays.length-1?{kind:'debt'}:null,date:p.date,amt:p.amt,pen:p.pen||0,
+                fine:p.fine||0,method:p.method,fees:p.fees,source:p.source||p.qr,t:type});
+        }
+        for(const [index,p] of (d.early||[]).entries()){
+            receive('early:'+index,{date:p.date,amt:p.paid??p.amt,pen:0,method:p.method,fees:p.fees,source:p.source,t:'early'});
+        }
+        const p=d.payoff;
+        if(p&&(p.amt||p.pen))receive('payoff',{target:{kind:'payoff'},date:p.date,amt:p.amt,pen:p.pen,fine:p.fine||0,
+            method:p.method,fees:p.fees,source:p.source||p.qr,t:d.lease?'buyout':'early'});
+        if(d.refund)rows.push({date:d.refund_date||d.closed||d.start,amt:-d.refund,pen:0,method:'',t:'ref',d});
+    }
+    return rows;
+}
 const rates=e=>e.method=='СБП'?(e.fees||{acq:AQ(),receipt:RC(),estimated:true}):{acq:0,receipt:0};
 const feeMoney=value=>cents(C.minor(value));
 function transactions(items=events()){
     const grouped=new Map();
     items.forEach((e,index)=>{
-        const key=JSON.stringify([e.d.id,e.date,e.method,e.source??index]);
-        const record=grouped.get(key)||{date:e.date,deal:e.d,method:e.method,cash:0,rates:rates(e),estimated:false,target:e.target};
+        const key=JSON.stringify([e.d.id,e.date,e.method,e.source||index]);
+        const record=grouped.get(key)||{date:e.date,deal:e.d,method:e.method,cash:0,rates:rates(e),estimated:false,target:e.target,receipt:e.receipt,correction:e.correction};
         if(e.target?.kind==='period')record.target=e.target;
         if(e.t==='down')record.includesAdvance=true;
         record.cash+=C.minor(e.amt)+C.minor(e.pen);
@@ -1565,16 +1616,50 @@ function feeHistory(a,b){
     return fold(`Комиссии по платежам${operations.length?' · '+operations.length:''}`,operations.length?`<div class=table-scroll><table class=data-table><thead><tr><th>Платёж</th><th>Сумма</th><th>Банк</th><th>Чек</th></tr></thead><tbody>${operations.map(e=>`<tr><th><button class=un onclick="go('deal','${e.deal.id}')">${fmt(e.date)}</button><br><small>${esc(nm(e.deal.client))}${e.estimated?' · оценка':''}</small></th><td>${m(e.amount)}</td><td>${feeMoney(e.acq)}</td><td>${feeMoney(e.receipt)}</td></tr>`).join('')}</tbody></table></div>`:empty('receipt','Поступлений по СБП за период нет'));
 }
 function receiptHistory(a,b){
-    const rows=transactions().filter(e=>e.amount>0&&e.date>=a&&e.date<=b).sort((x,y)=>y.date.localeCompare(x.date));
+    const rows=transactions(events(S.deals,{includeExcluded:true})).filter(e=>e.amount>0&&e.date>=a&&e.date<=b).sort((x,y)=>y.date.localeCompare(x.date));
     return fold('Поступления · история',rows.length?`<div class=grp>${rows.map(e=>{
         const d=e.deal,target=e.target;
         const remove=can('pay')&&target&&!e.includesAdvance&&d.status==='active'&&(target.kind==='payoff'?
             !d.deposit_refund&&(!d.payoff?.qr||d.lease&&isOwner()):!d.payoff);
         const action=target?.kind==='period'?`unpay('${d.id}',${Number(target.period)})`:target?.kind==='debt'?
             `unDebt('${d.id}')`:`cancelEarlyBuyout('${d.id}')`;
-        return `<div class="row nl"><span class=tx><b>${m(e.amount)}</b><span>${fmt(e.date)} · ${esc(e.method)} · ${esc(nm(d.client))}</span></span>
-            ${remove?`<button class="btn sec sm" onclick="${action}">Снять с учёта</button>`:''}</div>`;
+        const correction=e.correction,archiveAction=isOwner()&&d.status!=='active'&&e.receipt;
+        return `<div class="row nl report-receipt"><span class=tx><b>${m(e.amount)}</b><span>${fmt(e.date)} · ${esc(e.method)} · ${esc(nm(d.client))}</span>
+            ${correction?`<span>Исключено из отчётов · ${fmt(correction.date)} · ${esc(correction.reason)}</span>`:''}</span>
+            ${remove?`<button class="btn sec sm" onclick="${action}">Снять с учёта</button>`:''}
+            ${archiveAction?`<button class="btn sec sm" onclick="correctReportReceipt('${d.id}',${esc(JSON.stringify(e.receipt))},${!!correction})">${correction?'Вернуть в отчёты':'Исключить из отчётов'}</button>`:''}</div>`;
     }).join('')}</div>`:empty('receipt','Поступлений за период нет'));
+}
+async function correctReportReceipt(id,receipt,restore){
+    const d=dealById(id);
+    if(!d)return;
+    let reason;
+    if(restore){
+        if(!await uiConfirm('Сумма снова войдёт в отчёты.','Вернуть',{title:'Вернуть поступление в отчёты?'}))return;
+    }else{
+        reason=await sheet(`<h3>Исключить поступление из отчётов?</h3>
+            <p>Запись в договоре и банковская операция сохранятся.</p>
+            <label class=fld><span>Причина корректировки</span><input data-reason maxlength="300" required></label>
+            <button class="btn blk" data-confirm>Исключить</button><button class="btn sec blk" data-close>Отмена</button>`,(root,done)=>{
+            const input=root.querySelector('[data-reason]');
+            root.querySelector('[data-confirm]').onclick=()=>{if(input.value.trim()&&input.checkValidity())done(input.value)};
+            root.querySelector('[data-close]').onclick=()=>done(null);
+        },null);
+        if(reason===null)return;
+        reason=reason.trim();
+        if(!reason||reason.length>300)return uiAlert('Укажите причину, до 300 символов.');
+    }
+    try{
+        await api('/api/report-receipt',{deal:id,receipt,version:d._v||0,do:restore?'restore':'exclude',reason});
+        await load();toast(restore?'Поступление возвращено в отчёты':'Поступление исключено из отчётов');
+    }catch(error){uiAlert(error.message||error)}
+}
+function pendingRentRefunds(){
+    const pending=S.deals.filter(d=>d.rent_refund_due);
+    if(!pending.length)return '';
+    return fold(`Ожидают выплаты за аренду · ${pending.length}`,`<div class=grp>${pending.map(d=>
+        `<button class="row nl" onclick="go('deal','${d.id}')"><span class=tx><b>${esc(nm(d.client))}</b>
+        <span>Велосипед возвращён ${fmt(d.closed)}</span></span><b>${m(d.rent_refund_due)}</b></button>`).join('')}</div>`);
 }
 function rentalDeposits(a,b){
     let received=0,returned=0,held=0,balance=0,hasDeposits=false;
@@ -1646,7 +1731,7 @@ ${profList(p,pf,first)}
 ${rentalDeposits(a,b)}
 <div class=card><b>По способам оплаты</b>${Object.keys(R.by).length?bars(Object.keys(R.by).map(k=>[esc(k),R.by[k]])):'<p class=mu style="margin:8px 0 0">Платежей нет</p>'}</div>
 <div class=card><b>Налог, эквайринг и расходы</b>${kv(`Налог ${pc(TX())}% (отложить)`,m(R.tax))}${kv('Эквайринг по СБП',feeMoney(R.acq))}${kv('Формирование чеков по СБП',feeMoney(R.receipt))}${kv('Вложения при выдаче',m(R.investment))}${kv('Расходы на обслуживание',m(R.exp))}${kv('Подарки клиентам',m(R.gifts))}${R.overhead?kv('Разовые расходы',m(R.overhead)):''}${R.lostN?kv(`Убыток от списаний (${R.lostN})`,m(R.lost)):''}${kv('Остаток после расходов периода',m(R.net-R.tax-R.acq-R.receipt-R.investment-R.exp-R.gifts-R.overhead))}</div>
-${receiptHistory(a,b)}${expensesCard(a,b,R.overhead)}${feeHistory(a,b)}
+${pendingRentRefunds()}${receiptHistory(a,b)}${expensesCard(a,b,R.overhead)}${feeHistory(a,b)}
 ${can('pay')?`<div class=acts><button class="btn sec blk" onclick="go('statementS')">Сверка СБП с выпиской</button></div>`:''}
 ${wl.length?`<div class=card><b>Списано за период</b>${wl.map(k=>kv(`${esc(k.name)}, ${esc(k.wo.reason)}`,m(k.wo.loss))).join('')}</div>`:''}
 <div class=card><b>Весь парк за всё время</b>${kv('Вложено (закупка, оборудование, обслуживание, подарки)',m(inv))}${kv('Получено от клиентов',m(all.net))}${kv('Разница',m(all.net-inv))}${lostAll?kv('В том числе убытки по списанным',m(lostAll)):''}</div>
@@ -1980,7 +2065,7 @@ function set(){
         <button class="btn sec" onclick="$('#rf').click()">${ic('up','s')}Восстановить</button></div>
         <input id=rf type=file accept=".json,application/json" hidden onchange="restoreFile(this)"></div>`;
     const log=`<div class=grp><button class="row nl" onclick="go('logS')"><span class=gl>${ic('list')}</span><span class=tx><b>Открыть журнал действий</b><span>Кто и что менял</span></span>${ic('right')}</button></div>`;
-    return `<div class=hd><div><small>Версия 33</small><h1>Настройки</h1></div></div>`
+    return `<div class=hd><div><small>Версия 34</small><h1>Настройки</h1></div></div>`
         +tariffs
         +settingSection('payments','Платежи, штрафы и неустойка',payments)
         +settingSection('fees','Налог и комиссии',fees)
@@ -2049,6 +2134,9 @@ const journalActions={
     'pay-periods':['payment','Принят платёж по графику'],'pay-qr':['payment','Принята оплата по QR'],
     'deal-fine':['deal','Изменён размер штрафа'],'qr-accounting-void':['payment','Оплата по QR снята с учёта'],
     'pay-debt':['payment','Оплачен долг'],'cancel-payment':['payment','Отменён платёж'],
+    'receipt-report-exclude':['payment','Поступление исключено из отчётов'],
+    'receipt-report-restore':['payment','Поступление возвращено в отчёты'],
+    'rent-refund-paid':['payment','Выплачен возврат арендной платы'],
     'cancel-debt-pay':['payment','Отменена оплата долга'],'move-payment':['payment','Платёж перенесён'],
     'qr':['payment','Создан QR для оплаты'],'qr-paid':['payment','Оплата QR подтверждена'],
     'qr-review':['payment','QR отправлен на проверку'],'qr-duplicate':['payment','Повторное подтверждение QR'],
@@ -2196,6 +2284,11 @@ function journalFields(data,kind,action){
         if(payment&&typeof payment=='object')set(`Взнос ${period} · оплата`,payment,received);
     }
     (data.dpays||[]).forEach((payment,index)=>set(`Доплата ${index+1}`,payment,received));
+    set('К возврату за дни аренды',data.rent_refund_due,m);
+    set('Дата выплаты возврата',data.refund_date,journalDate);
+    for(const item of data.report_receipt_corrections||[]){
+        set(`Корректировка · ${item.parts.join(', ')}`,item.reason);
+    }
     (data.early||[]).forEach((payment,index)=>set(`Досрочный платёж ${index+1}`,{...payment,amt:payment.paid??payment.amt},received));
     (data.bonuses||[]).forEach((bonus,index)=>set(`Скидка ${index+1}`,bonus,value=>`${m(value.amt)} · ${journalPercent(value.rate)}`));
     (data.exp||[]).forEach((expense,index)=>set(`Расход ${index+1}`,expense,value=>[value.date&&journalDate(value.date),m(value.amt),value.text].filter(Boolean).join(' · ')));
@@ -3082,13 +3175,14 @@ function clientRental(d){
         `<p>${progress.remaining?`До открытия осталось оплатить <b>${progress.remaining} ${plur(progress.remaining,'период','периода','периодов')}</b>.`:'Первые четыре периода оплачены.'}
         ${today<progress.opensOn?` Выкуп станет доступен с ${rentalDay(progress.opensOn)}.`:''}</p>`}
         </section>`:'';
-    const status=!on?`<div class=card><b>${d.status==='archived'?'Выкуп завершён':'Аренда завершена'}</b></div>`:
+    const status=!on?`<div class=card><b>${d.status==='archived'?'Выкуп завершён':'Аренда завершена'}</b>
+        ${d.rent_refund_due?kv('Ожидается возврат за дни аренды',m(d.rent_refund_due)):''}</div>`:
         open&&!first&&!debt?`<div class=card><b>Оплачены все периоды аренды</b></div>`:'';
     const terms=fold('Условия договора',`
         ${kv('Велосипед и АКБ',esc(rentalConfiguration(d.lease)))}
         ${kv('Плата за неделю',m(d.lease.weekly))}${kv('Аренда по',fmt(rentalEnd(d)))}
         ${open?'':rentalPriceRows(d.lease.price,balance.price,balance.buyoutReduction)}${kv('Оплачено за аренду',m(balance.paid))}
-        ${depositDetails(d)}${d.refund?kv('Возвращено за дни аренды',m(d.refund)):''}`);
+        ${depositDetails(d)}${rentRefundDetails(d)}`);
     const heading=[leaseModelTitle(d.lease),d.contract&&'договор № '+d.contract].filter(Boolean).join(' · ');
     return `<div class=rental-account><div class=hd><div><small>${esc(heading)}</small><h1>Аренда с правом выкупа</h1></div></div>
         ${completionCard(d)}${status}${rentCard}${debtCard}${bills(d)}${offer}${terms}
